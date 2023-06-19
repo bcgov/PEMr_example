@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SAGA_METADATA>
+  <DATABASE></DATABASE>
+  <SOURCE></SOURCE>
+  <HISTORY saga-version="7.7.0">
+    <TOOL library="ta_channels" id="4" name="Overland Flow Distance to Channel Network">
+      <OPTION type="grid_system" id="PARAMETERS_GRID_SYSTEM" name="Grid System">
+        <CELLSIZE>25</CELLSIZE>
+        <XMIN>944212.5</XMIN>
+        <XMAX>970587.5</XMAX>
+        <YMIN>1027212.5</YMIN>
+        <YMAX>1042387.5</YMAX>
+      </OPTION>
+      <OPTION type="choice" id="METHOD" name="Flow Algorithm" index="1">MFD</OPTION>
+      <OPTION type="boolean" id="BOUNDARY" name="Boundary Cells">false</OPTION>
+      <INPUT type="grid" id="ELEVATION" name="Elevation" system="PARAMETERS_GRID_SYSTEM">
+        <TOOL library="ta_preprocessor" id="5" name="Fill Sinks XXL (Wang &amp; Liu)">
+          <OPTION type="grid_system" id="PARAMETERS_GRID_SYSTEM" name="Grid System">
+            <CELLSIZE>25</CELLSIZE>
+            <XMIN>944212.5</XMIN>
+            <XMAX>970587.5</XMAX>
+            <YMIN>1027212.5</YMIN>
+            <YMAX>1042387.5</YMAX>
+          </OPTION>
+          <OPTION type="double" id="MINSLOPE" name="Minimum Slope [Degree]">0.100000</OPTION>
+          <INPUT type="grid" id="ELEV" name="DEM" system="PARAMETERS_GRID_SYSTEM">
+            <TOOL library="io_gdal" id="0" name="Import Raster">
+              <OPTION type="file" id="FILES" name="Files">D:/PEM_DATA/PEMr_example/Buck_AOI/10_clean_inputs/20_covariates/25m/25m\dtm.sdat</OPTION>
+              <OPTION type="choice" id="MULTIPLE" name="Multiple Bands Output" index="2">automatic</OPTION>
+              <OPTION type="text" id="SELECTION" name="Select from Multiple Bands"/>
+              <OPTION type="boolean" id="TRANSFORM" name="Transformation">true</OPTION>
+              <OPTION type="choice" id="RESAMPLING" name="Resampling" index="0">Nearest Neighbour</OPTION>
+              <OPTION type="choice" id="EXTENT" name="Extent" index="0">original</OPTION>
+              <OUTPUT type="grid_list" id="GRIDS" name="Grids">dtm</OUTPUT>
+            </TOOL>
+          </INPUT>
+          <OUTPUT type="grid" id="FILLED" name="Filled DEM">dtm [no sinks]</OUTPUT>
+        </TOOL>
+      </INPUT>
+      <INPUT type="grid" id="CHANNELS" name="Channel Network" system="PARAMETERS_GRID_SYSTEM">
+        <TOOL library="ta_channels" id="0" name="Channel Network">
+          <OPTION type="grid_system" id="PARAMETERS_GRID_SYSTEM" name="Grid System">
+            <CELLSIZE>25</CELLSIZE>
+            <XMIN>944212.5</XMIN>
+            <XMAX>970587.5</XMAX>
+            <YMIN>1027212.5</YMIN>
+            <YMAX>1042387.5</YMAX>
+          </OPTION>
+          <OPTION type="choice" id="INIT_METHOD" name="Initiation Type" index="2">Greater than</OPTION>
+          <OPTION type="double" id="INIT_VALUE" name="Initiation Threshold">1000000.000000</OPTION>
+          <OPTION type="integer" id="DIV_CELLS" name="Tracing: Max. Divergence">5</OPTION>
+          <OPTION type="integer" id="MINLEN" name="Min. Segment Length">10</OPTION>
+          <INPUT type="grid" id="ELEVATION" name="Elevation" system="PARAMETERS_GRID_SYSTEM">
+            <TOOL library="ta_preprocessor" id="5" name="Fill Sinks XXL (Wang &amp; Liu)">
+              <OPTION type="grid_system" id="PARAMETERS_GRID_SYSTEM" name="Grid System">
+                <CELLSIZE>25</CELLSIZE>
+                <XMIN>944212.5</XMIN>
+                <XMAX>970587.5</XMAX>
+                <YMIN>1027212.5</YMIN>
+                <YMAX>1042387.5</YMAX>
+              </OPTION>
+              <OPTION type="double" id="MINSLOPE" name="Minimum Slope [Degree]">0.100000</OPTION>
+              <INPUT type="grid" id="ELEV" name="DEM" system="PARAMETERS_GRID_SYSTEM">
+                <TOOL library="io_gdal" id="0" name="Import Raster">
+                  <OPTION type="file" id="FILES" name="Files">D:/PEM_DATA/PEMr_example/Buck_AOI/10_clean_inputs/20_covariates/25m/25m\dtm.sdat</OPTION>
+                  <OPTION type="choice" id="MULTIPLE" name="Multiple Bands Output" index="2">automatic</OPTION>
+                  <OPTION type="text" id="SELECTION" name="Select from Multiple Bands"/>
+                  <OPTION type="boolean" id="TRANSFORM" name="Transformation">true</OPTION>
+                  <OPTION type="choice" id="RESAMPLING" name="Resampling" index="0">Nearest Neighbour</OPTION>
+                  <OPTION type="choice" id="EXTENT" name="Extent" index="0">original</OPTION>
+                  <OUTPUT type="grid_list" id="GRIDS" name="Grids">dtm</OUTPUT>
+                </TOOL>
+              </INPUT>
+              <OUTPUT type="grid" id="FILLED" name="Filled DEM">dtm [no sinks]</OUTPUT>
+            </TOOL>
+          </INPUT>
+          <INPUT type="grid" id="INIT_GRID" name="Initiation Grid" system="PARAMETERS_GRID_SYSTEM">
+            <TOOL library="ta_hydrology" id="0" name="Flow Accumulation (Top-Down)">
+              <OPTION type="grid_system" id="PARAMETERS_GRID_SYSTEM" name="Grid System">
+                <CELLSIZE>25</CELLSIZE>
+                <XMIN>944212.5</XMIN>
+                <XMAX>970587.5</XMAX>
+                <YMIN>1027212.5</YMIN>
+                <YMAX>1042387.5</YMAX>
+              </OPTION>
+              <OPTION type="integer" id="STEP" name="Step">0</OPTION>
+              <OPTION type="choice" id="FLOW_UNIT" name="Flow Accumulation Unit" index="1">cell area</OPTION>
+              <OPTION type="choice" id="METHOD" name="Method" index="4">Multiple Flow Direction</OPTION>
+              <OPTION type="boolean" id="LINEAR_DO" name="Thresholded Linear Flow">false</OPTION>
+              <OPTION type="double" id="CONVERGENCE" name="Convergence">1.100000</OPTION>
+              <INPUT type="grid" id="ELEVATION" name="Elevation" system="PARAMETERS_GRID_SYSTEM">
+                <TOOL library="io_gdal" id="0" name="Import Raster">
+                  <OPTION type="file" id="FILES" name="Files">D:/PEM_DATA/PEMr_example/Buck_AOI/10_clean_inputs/20_covariates/25m/25m\dtm.sdat</OPTION>
+                  <OPTION type="choice" id="MULTIPLE" name="Multiple Bands Output" index="2">automatic</OPTION>
+                  <OPTION type="text" id="SELECTION" name="Select from Multiple Bands"/>
+                  <OPTION type="boolean" id="TRANSFORM" name="Transformation">true</OPTION>
+                  <OPTION type="choice" id="RESAMPLING" name="Resampling" index="0">Nearest Neighbour</OPTION>
+                  <OPTION type="choice" id="EXTENT" name="Extent" index="0">original</OPTION>
+                  <OUTPUT type="grid_list" id="GRIDS" name="Grids">dtm</OUTPUT>
+                </TOOL>
+              </INPUT>
+              <OUTPUT type="grid" id="FLOW" name="Flow Accumulation">Flow Accumulation</OUTPUT>
+            </TOOL>
+          </INPUT>
+          <OUTPUT type="grid" id="CHNLNTWRK" name="Channel Network">Channel Network</OUTPUT>
+        </TOOL>
+      </INPUT>
+      <OUTPUT type="grid" id="DISTANCE" name="Overland Flow Distance">Overland Flow Distance</OUTPUT>
+    </TOOL>
+  </HISTORY>
+  <FILE></FILE>
+  <DESCRIPTION></DESCRIPTION>
+  <PROJECTION>
+    <OGC_WKT>PROJCS["NAD83 / BC Albers",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]],PROJECTION["Albers_Conic_Equal_Area"],PARAMETER["latitude_of_center",45],PARAMETER["longitude_of_center",-126],PARAMETER["standard_parallel_1",50],PARAMETER["standard_parallel_2",58.5],PARAMETER["false_easting",1000000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]</OGC_WKT>
+    <PROJ4>+proj=aea +lat_0=45 +lon_0=-126 +lat_1=50 +lat_2=58.5 +x_0=1000000 +y_0=0 +datum=NAD83 +units=m +no_defs</PROJ4>
+    <EPSG>-1</EPSG>
+  </PROJECTION>
+</SAGA_METADATA>
