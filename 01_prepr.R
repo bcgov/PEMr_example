@@ -29,7 +29,7 @@ mapview::mapview(aoi)
 # write out (this will be added to function later on)
 sf::st_write(aoi, file.path(fid$shape_dir_1010[1], "aoi_snapped.gpkg"))
 
-
+aoi <- st_read(file.path(fid$shape_dir_1010[1], "aoi_snapped.gpkg"))
 # will to test at home
 # create vector layers
 
@@ -86,6 +86,8 @@ trim_raw <- cded_raster(aoi)
 # convert the trim to matching raster 
 trim <- terra::rast(trim_raw)
 trim <- terra::project(trim, r25)
+writeRaster(trim, file.path(fid$cov_dir_1020[2],"25m", "dem.tif"))
+
 
 layer_options <- c("sinksfilled", "sinkroute", "dem_preproc", "slope_aspect_curve",
                    "tcatchment", "tca", "scatchment", "twi", "channelsnetwork",
