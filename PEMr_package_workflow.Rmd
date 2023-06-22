@@ -49,25 +49,73 @@ fid <- setup_folders(project_name)
 ##Add base data to the folders
 
 Copy an aoi.gpkg (project boundary) into the Project /00_raw_inputs/10_vector/ folder.
+```{r}
+aoi_snap <- function(aoi, method=c("expand","shrink"), buffer=0){
+  ## testing
+  # setwd("e:/workspace/2019/PEM_2020/PEMWorkFlow/")
+  #aoi <- sf::st_read("../data/Block_aoi.gpkg")
+  bb <- sf::st_bbox(aoi)
+
+  ## Function
+  print("initial extent is:")
+  print(bb)
+
+  if (buffer>0 & method == "expand") {
+    ## Generate expanded bbox -- expands to neared 100m
+    xmin <- floor((bb$xmin - buffer) / 100)*100
+    xmax <- ceiling((bb["xmax" ]+ buffer) / 100) * 100
+    ymin <- floor((bb$ymin - buffer) / 100)*100
+    ymax <- ceiling((bb["ymax"] + buffer) / 100) * 100
+
+
+} else if (method == "expand") {
+    ## Generate expanded bbox -- expands to neared 100m
+    xmin <- floor(bb$xmin / 100)*100
+    xmax <- ceiling(bb["xmax"] / 100) * 100
+    ymin <- floor(bb$ymin / 100)*100
+    ymax <- ceiling(bb["ymax"] / 100) * 100
+
+  } else if (method == "shrink") {
+
+    xmin <- ceiling(bb$xmin / 100)*100
+    xmax <- floor(bb["xmax"] / 100) * 100
+    ymin <- ceiling(bb$ymin / 100)*100
+    ymax <- floor(bb["ymax"] / 100) * 100
+
+  }
+
+  box <- matrix(c(xmin, ymin, xmin, ymax, xmax, ymax, xmax, ymin, xmin, ymin), ncol = 2, byrow = TRUE)
+  box <- sf::st_polygon(list(box))
+  box <- sf::st_sfc(box, crs=sf::st_crs(aoi))
+  box <- sf::st_as_sf(box)
+
+  ## Report and Return
+  print("Extent is:")
+  print(sf::st_bbox(box))
+  return(box)
+
+}
+
+```
 
 ```{r function to create aoi bounding box}
-create_AOI <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
+create_aoi <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
                        out_dir = file.path(fid$shape_dir_1010[1]), 
-                       aoi_vec = "aoi.gpkg"){       ## input raster
+                       aoi_vec = "aoi.gpkg",
+                       buffer=0){       ## input raster
 aoi <- st_read(file.path(aoi_dir, aoi_vec))
-aoi_bb <- aoi_snap(aoi, method = "expand")
+aoi_bb <- aoi_snap(aoi, method = "expand", buffer = buffer)
 aoi <- st_read(file.path(aoi_dir, aoi_vec))
 aoi_ls <- aoi_snap_landscape(aoi, "expand")
 sf::st_write(aoi, file.path(out_dir,"aoi.gpkg"), append = FALSE)
 sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
-sf::st_write(aoi_ls, file.path(out_dir,"aoi_ls_snap.gpkg"), append = FALSE)
+sf::st_write(aoi_ls, file.path(out_dir,"aoi_watershed.gpkg"), append = FALSE)
 }
 ```
 
 
 ```{r create aoi bounding box}
-create_AOI()
-
+create_aoi(buffer = 1000)
 ```
 
 ##Downloads AOI vector data from BC Data catalogue
@@ -78,7 +126,6 @@ Other option would be to simply point to an raw folder where files have been cop
 ###----changed default parameters for file locations and added output list
 #devtools::load_all("D:\\GitHub\\PEMprepr")
 create_base_vectors()
-
 v <- list.files(path = fid$shape_dir_0010[1], pattern = ".gpkg", recursive = TRUE)
 v
 ```
@@ -127,7 +174,7 @@ create_template <- function(aoi_bb = file.path(fid$shape_dir_1010[1],
 ```{r create raster templates}
 r5 <- create_template(res = 5)
 r25 <- create_template(res = 25)
-aoi_bb = file.path(fid$shape_dir_1010[1],"aoi_ls_snap.gpkg")
+aoi_bb = file.path(fid$shape_dir_1010[1],"aoi_watershed.gpkg")
 r25_ls <- create_template(aoi_bb = aoi_bb, res = 25, filename = "template_ls.tif")
 ```
 
