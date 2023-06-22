@@ -1,0 +1,513 @@
+---
+title: "ML_PEM full workflow"
+subtitle: "Step through all functions"
+author: "W. H.MacKenzie"
+date: "2023-06-19"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Set up new study area}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options:
+  chunk_output_type: console
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(  collapse = TRUE,  comment = "#>")
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+# remotes::install_github('bcgov/PEMr', build_vignettes = FALSE)
+
+library(PEMr)
+run_pemr()
+library(PEMprepr)
+library(ggplot2)
+library(sf)
+library(terra)
+library(PEMsamplr)
+
+devtools::load_all("D:\\GitHub\\PEMprepr")
+devtools::load_all("D:\\GitHub\\PEMsamplr")
+```
+
+`PEMr`, short for _Predictive Ecosystem Mapping in R is a set of packages for developing a machine learning PEM following the process of MacKenzie et al. 
+See [BC-BEC](https://www.for.gov.bc.ca/HRE/becweb/index.html)
+and [`PEMr`](https://github.com/bcgov/PEMr) on _GitHub_for details about the BC BEC classification system and, the PEM Project.
+
+In the example below it is assumed that you are running the following within a new R project.
+## Project Set up. 
+1) Set up a new R studio project for your PEM modelling. 
+2) For each study area a folder structure based on your project/AOI name is constructed under this Rproject folder 
+
+# Project folder setup
+```{r create project folders}
+project_name <- "BaboonProcess_AOI"
+fid <- setup_folders(project_name)
+```
+
+##Add base data to the folders
+
+Copy an aoi.gpkg (project boundary) into the Project /00_raw_inputs/10_vector/ folder.
+
+```{r function to create aoi bounding box}
+create_AOI <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
+                       out_dir = file.path(fid$shape_dir_1010[1]), 
+                       aoi_vec = "aoi.gpkg"){       ## input raster
+aoi <- st_read(file.path(aoi_dir, aoi_vec))
+aoi_bb <- aoi_snap(aoi, method = "expand")
+aoi <- st_read(file.path(aoi_dir, aoi_vec))
+aoi_ls <- aoi_snap_landscape(aoi, "expand")
+sf::st_write(aoi, file.path(out_dir,"aoi.gpkg"), append = FALSE)
+sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
+sf::st_write(aoi_ls, file.path(out_dir,"aoi_ls_snap.gpkg"), append = FALSE)
+}
+```
+
+
+```{r create aoi bounding box}
+create_AOI()
+
+```
+
+##Downloads AOI vector data from BC Data catalogue
+A standard set of Vector data is used for subsequent sample planning and is based on the `aoi`.  This script collects numerous vector layers from the [BC Data Catalogue](https://catalogue.data.gov.bc.ca) making use of the [`bcdata`](https://github.com/bcgov/bcdata) package. Files are saved in _geopackage_ format.
+Other option would be to simply point to an raw folder where files have been copied and snap all those layers
+
+```{r, eval=FALSE}
+###----changed default parameters for file locations and added output list
+#devtools::load_all("D:\\GitHub\\PEMprepr")
+create_base_vectors()
+
+v <- list.files(path = fid$shape_dir_0010[1], pattern = ".gpkg", recursive = TRUE)
+v
+```
+
+
+## Review data and make anyfixes
+Once the vector data is reviewed and edited where appropriate we can save a final version in the "clean input data folder". 
+```{r copy clean vectors function}
+copy_clean_vectors <- function(origindir = fid$shape_dir_0010[1], 
+                       targetdir = fid$shape_dir_1010[1], 
+                       aoi_vec = "aoi.gpkg"){       ## input raster
+filestocopy <- list.files(path = origindir, pattern = ".gpkg",
+    recursive = TRUE)
+lapply(filestocopy, function(x) file.copy(paste(origindir, x, sep = "/"),
+    paste(targetdir, x, sep = "/"), recursive = FALSE, copy.mode = TRUE))
+}
+```
+
+
+```{r copy reviewed layers to clean folders}
+copy_clean_vectors()
+```
+
+## Create raster templates from AOI
+
+The snapped `aoi` is used to create a raster template all generated covariates created to match selected template.
+
+```{r create raster templates function}
+create_template <- function(aoi_bb = file.path(fid$shape_dir_1010[1],
+                                               "aoi_snapped.gpkg"), 
+                            res,
+                            outpath = fid$cov_dir_1020[2],
+                            filename = "template.tif"){
+    aoi_bb <- terra::vect(aoi_bb)
+    template <- terra::rast(aoi_bb, resolution = res)
+      terra::values(template) <- 0
+  res_name = paste0(res, 'm')
+    terra::writeRaster(template, file.path(outpath, res_name, filename), overwrite = TRUE)
+  return(template)
+
+}
+
+```
+
+
+```{r create raster templates}
+r5 <- create_template(res = 5)
+r25 <- create_template(res = 25)
+aoi_bb = file.path(fid$shape_dir_1010[1],"aoi_ls_snap.gpkg")
+r25_ls <- create_template(aoi_bb = aoi_bb, res = 25, filename = "template_ls.tif")
+```
+
+# Generation of raster covariates
+
+Here we generate the terrain derived features for modelling.  This is powered by [SAGA-GIS](https://saga-gis.sourceforge.io/en/index.html).  
+Covariates can be generated at multiple resolutions. The standard modelling for ML-PEM is at 5m scale.
+
+1. Copy a dem.tif raster layer into the ./00_raw_inputs/20_dem/lidar folder.
+2. Align the dem to the template.  resample the `dtm` to the desired resolution.
+3. create the predictor covariates
+
+## Import DEM
+
+```{r read in local LiDAR DEM}
+dem <- terra::rast(file.path(fid$lidar_dir_00[2], "dem.tif"))
+plot(dem)
+## or alternate get external TRIM data for DEM
+
+```
+
+
+```{r read in Trim DEM from bcmaps}
+library(bcmaps)
+get_trim_dem <- function(aoi_bb = file.path(fid$shape_dir_1010[2],"aoi_snapped.gpkg"),
+                         res,
+                         filename = "dem.tif",
+                         out_dir = fid$cov_dir_1020[2]){
+aoi <- st_read(aoi_bb)
+  trim_raw <- bcmaps::cded_raster(aoi)
+trim <- terra::rast(trim_raw)
+res_name = paste0(res, 'm')
+template_file <- file.path(fid$cov_dir_1020[2],res_name, "template.tif")
+template <- terra::rast(template_file)
+trim <- terra::project(trim, template)
+terra::writeRaster(trim, file.path(out_dir, res_name, filename), overwrite = TRUE)
+}
+
+```
+
+```{r}
+get_trim_dem(res = 5)
+get_trim_dem(res = 25)
+aoi_ls <- file.path(fid$shape_dir_1010[2],"aoi_ls_snap.gpkg")
+get_trim_dem(aoi_bb = aoi_ls, res = 25, filename = "dem_ls.tif")
+```
+
+## Create the covariates
+
+Note that the pre-defined output directory `fid$cov_dir_1020[2]`, created using `setup_folders()`, is used to ensure generated covariates are saved to the correct location. Rasters are also saved into subfolders of the same resolution.
+
+
+```{r, eval=FALSE}
+
+layer_options <- c("sinksfilled", "sinkroute", "dem_preproc", "slope_aspect_curve",
+               "tcatchment", "tca", "scatchment", "twi", "channelsnetwork",
+               "overlandflow", "overlandflow2", "multiresflatness", "multiresflatness2",
+               "multiresflatness3", "tri", "convergence", "openness",
+               "dah", "tpi", "ridgevalley", "mrn", "flowaccumulation",
+               "slopelength", "flowaccumulation2", "flowaccumulation3",
+               "flowpathlength", "flowpathlength2", "flowpathlength3", "lsfactor",
+               "solarrad", "convexity", "vertdistance", "tci_low",
+               "swi", "windexp", "texture", "protection", "vrm",
+               "mbi", "mscale_tpi", "relposition", "slopecurvatures",
+               "steepestslope", "upslopearea")
+
+
+  # run a test covariate
+#devtools::load_all("D:\\GitHub\\PEMprepr")
+
+####add these a default parameters to create_covariates
+sagapath = "C:/saga-9.0.2_x64/"
+dtm = file.path(fid$lidar_dir_00[2], "dem.tif")
+
+create_covariates(dtm,        ## raster created above
+                  SAGApath = sagapath, ## Where SAGA GIS is installed
+                  output = fid$cov_dir_1020[2], ## from the setup_folders above
+                  layers = "sinksfilled")        ## test one is working 
+
+# run all covariates 
+create_covariates(dtm ,           ## raster created above
+                  SAGApath = sagapath, ## Where SAGA GIS is installed
+                  output, ## from the setup_folders above
+                  layers = c( "all"))       ## use all or one of the above
+
+##check the list of covariates. Notes these are saved in sdat format.
+
+l <- list.files(path = fid$cov_dir_1020[2], pattern = ".sdat$",
+                recursive = TRUE)
+
+l
+```
+
+Create a bec raster to match the template sizes 
+
+```{r create rast from vector using template}
+###create function
+rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = r5){
+  if (class(covar)[1] == "sf") {
+    aoi <- terra::vect(aoi)
+  }
+covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
+covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
+    unique() 
+covar_code <- covar_code %>% 
+    mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
+covar_sf <- dplyr::left_join(covar_sf, covar_code)
+covar_vect <- terra::vect(covar_sf)
+covar_rast <- terra::rasterize(covar_vect, template)
+return(covar_rast)
+}
+```
+
+
+```{r}
+bec_ras5 <- rasterize_to_template()
+terra::writeRaster(bec_ras5, file.path(fid$cov_dir_1020[2], "5m", "bec.tif"), overwrite = TRUE)
+```
+
+## Generate 25m landscape covariates for sample plan
+
+```{r}
+#library(PEMsamplr)
+devtools::load_all("D:\\GitHub\\PEMsamplr")
+sagapath = "C:/saga-9.0.2_x64/"
+create_samplr_covariates()
+                     
+```
+## Check landscape variables
+```{r}
+# generate landscape validation 
+
+fileoi <- c("dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif")
+outpath = file.path(fid$sampling_input_landscape[2])
+
+filesoi <- list.files(outpath, full.names = TRUE)[list.files(outpath) %in% fileoi]
+
+landscapes <- create_binned_landscape(outpath)
+
+terra::plot(landscapes)
+
+terra::writeRaster(landscapes, file.path(outpath, "landscape_variable_validation.tif"), overwrite = TRUE)
+
+
+# Check the landscape distribution by bgc
+
+becpath <-fid$shape_dir_1010[1]
+
+bec <- sf::st_read(file.path(becpath, "bec.gpkg")) %>%
+  sf::st_cast(., "MULTIPOLYGON") 
+
+routdf <- check_bgc_landscapes(bec,landscapes)
+
+ggplot2::ggplot(routdf, aes(landscape)) +
+  ggplot2::geom_histogram() +
+  ggplot2::facet_wrap(~MAP_LABEL)
+```
+
+```{r roads function}
+get_roads <- function(in_aoi, out_path, filename = "road_network.gpkg") {
+  # The main road network layer has too many roads in it. Filter it down to only
+  # include named roads and combine those with actual mapped FSR's
+
+  #in_aoi = "aoi_cost.gpkg"
+  aoi = st_read(in_aoi)
+  message("\rDownloading Road network")
+  roads <- bcdc_query_geodata("bb060417-b6e6-4548-b837-f9060d94743e") %>%
+    bcdata::filter(BBOX(local(st_bbox(aoi)))) %>% # slightly larger extent
+    bcdata::select(id, ROAD_NAME_FULL, ROAD_CLASS, ROAD_SURFACE, FEATURE_LENGTH_M) %>%
+    collect() %>%
+    dplyr::select(id, ROAD_NAME_FULL,ROAD_SURFACE, ROAD_CLASS,FEATURE_LENGTH_M) %>%
+       {if(nrow(.) > 0) {
+      st_intersection(., aoi) %>%
+       st_cast("MULTILINESTRING")
+    } else .}
+
+  fsr <- bcdc_query_geodata("9e5bfa62-2339-445e-bf67-81657180c682") %>%
+    bcdata::filter(
+      BBOX(local(st_bbox(aoi)))) %>%
+    collect() %>%
+    dplyr::select(id, FILE_TYPE_DESCRIPTION, FEATURE_LENGTH_M) %>%
+    dplyr::rename(ROAD_CLASS = FILE_TYPE_DESCRIPTION) %>%
+    dplyr::mutate(ROAD_CLASS = dplyr::case_when(
+      ROAD_CLASS == "Forest Service Road" ~ "resource",
+      ROAD_CLASS == "Road Permit" ~ "unclassifed")) %>%
+    dplyr::mutate(ROAD_SURFACE = dplyr::case_when(
+    ROAD_CLASS == "resource" ~ "loose",
+    ROAD_CLASS == "unclassifed" ~ "rough")) %>%
+    {if(nrow(.) > 0) {
+      st_intersection(., aoi) %>%
+        st_cast("MULTILINESTRING")
+    } else .}
+
+  road_merge <- dplyr::bind_rows(roads, fsr)
+
+  st_write(road_merge, file.path(out_path[2], filename), append = FALSE)
+}
+```
+Create larger area for small AOI that includes nearest towns
+```{r}
+aoi_cost <- st_read(file.path(fid$sampling_input_landscape[2], "roads_bb.gpkg"))
+aoi_cost <- aoi_snap(aoi_cost, "expand")
+st_write(aoi_cost, "aoi_cost.gpkg")
+get_trim_dem(aoi_bb = "aoi_cost.gpkg", res = 25, filename = "dem_cost.tif")
+
+
+get_roads(in_aoi = "aoi_cost.gpkg",
+                                   out_path = fid$sampling_input_landscape,
+                          filename = "roads_cost.gpkg")
+
+cities <- st_read(file.path(vec_dir, "major_towns_bc.gpkg"))
+### this does not work if outside of AOI
+nearest_town = "Houston"
+start <- cities[cities$NAME == nearest_town,"NAME"]
+my.df <- read.table(text=" x    y
+                       1740089    553458", header = TRUE)
+# 1553304    475488", header = TRUE)
+
+start <- st_as_sf(my.df, coords = c("x","y"),
+                  crs = 3005) %>%
+  as("Spatial")
+```
+
+## Generate cost layer (this needs work)
+```{r Cost layer}
+# devtools::load_all("D:\\GitHub\\PEMsamplr")
+# dem <- terra::rast(file.path( fid$cov_dir_1020[2],"25m", "dem_cost.tif"))
+# roads_network <- sf::st_read(file.path(fid$sampling_input_landscape[2], "roads_cost.gpkg"), quiet = TRUE) %>%
+#   sf::st_zm()
+# 
+# # check the roads layer
+# check_road_layer(roads_network)
+# mapview::mapview(roads_network)
+# ## generate transition layer 
+# costprep <- prep_cost_layers_lcp(x = dem,
+#                                  cost_function = "tobler offpath", 
+#                                  neighbours = 8, 
+#                                  roads = roads_network, 
+#                                  crit_slope = 12, 
+#                                  max_slope = NULL, 
+#                                  percentile = 0.5, 
+#                                  exaggeration = FALSE) 
+# #build cost layer
+# create_accum_cost <- function(x, origins, FUN = mean, rescale = FALSE) {
+# 
+#   cs_rast <- terra::rast(nrow = x$nrow, ncol = x$ncol, xmin = x$extent[1], xmax = x$extent[2], ymin = x$extent[3], ymax = x$extent[4],crs = x$crs)
+# 
+#   from_coords <- get_coordinates(origins)
+#   from_cell <- terra::cellFromXY(cs_rast, from_coords)
+# 
+#   cm_graph <- igraph::graph_from_adjacency_matrix(x$conductanceMatrix, mode = "directed", weighted = TRUE)
+# 
+#   igraph::E(cm_graph)$weight <- (1/igraph::E(cm_graph)$weight)
+# 
+#   from_distances <- igraph::distances(cm_graph, v = from_cell,  mode="out", algorithm = "dijkstra")
+# 
+#   accum_rasts <- c(rep(cs_rast, nrow(from_distances)))
+# 
+#   for(i in 1:terra::nlyr(accum_rasts))  {
+# 
+#     accum_rasts[[i]] <- terra::setValues(accum_rasts[[i]], from_distances[i,])
+# 
+#   }
+# 
+#   accum_rast <- terra::app(accum_rasts, fun = FUN)
+# 
+#   accum_rast[is.infinite(accum_rast)] <- NA
+# 
+#   if(rescale) {
+#     rast_min <- terra::minmax(accum_rast)[1]
+#     rast_max <- terra::minmax(accum_rast)[2]
+# 
+#     accum_rast <- ((accum_rast - rast_min)/(rast_max - rast_min))
+#   }
+# 
+#   return(accum_rast)
+# 
+# }
+# acost <- create_accum_cost(x = costprep, origin = start, FUN = min)
+# names(acost) = "cost"
+# 
+# terra::writeRaster(acost, file.path(fid$sampling_input_landscape[2], "cost_raw.tif"), overwrite = TRUE)
+# 
+# 
+# # Check costs by bgc vs binned landscape
+# landscape <- terra::rast(file.path(outpath, "landscape_variable_validation.tif"))
+# bgccost <- check_bgc_cost(bgc = bec, 
+#                           binned_landscape = landscape, 
+#                           cost = acost)
+# 
+# ggplot2::ggplot(bgccost, ggplot2::aes(landscape, fill = cost_code)) +
+#   ggplot2::geom_histogram(bins = 30) +
+#   ggplot2::facet_wrap(~MAP_LABEL)
+# 
+# 
+# 
+# 
+# # generate cost penalty 
+# 
+# final_cost <- create_cost_penalty(vec_dir = vec_dir, 
+#                                   cost = acost, 
+#                                   dem = dem, 
+#                                   costval = 3000,
+#                                   vri_cost = 2500,
+#                                   calc_by_qq = TRUE)
+# 
+# 
+# 
+# terra::plot(final_cost)
+# 
+# # create no sample areas 
+# cost_masked <- create_cost_nosample(vec_dir = vec_dir, 
+#                                     cost = final_cost)
+# 
+# terra::writeRaster(cost_masked, 
+ #                  file.path(fid$sampling_input_landscape[2],
+ #                            "cost.tif"), overwrite = TRUE)
+# 
+# 
+# # generate a BGC cost mask per BGC in map area
+# 
+# exclusion_path <- fid$sampling_input_exclusion[2]
+# 
+# create_bgc_mask(vec_dir, cost_masked, exclusion_path)
+```
+import existing cost layer
+```{r}
+cost <- terra::rast("D:/GitHub/PEMr_example/BaboonProcess_AOI/20_sample_plan/10_standard_sample/10_input_raster/landscape_covariates/cost.tif")
+cost <- terra::project(cost, r25)
+terra::writeRaster(cost, "D:/GitHub/PEMr_example/BaboonProcess_AOI/20_sample_plan/10_standard_sample/10_input_raster/landscape_covariates/cost.tif", overwrite = TRUE)
+```
+
+```{r}
+###############################################################
+# 1) generate clhs
+
+clhs_outpath <- fid$samplingplan_clhs[2]
+
+landscape_dir <- fid$sampling_input_landscape[2]
+
+fileoi <- c("dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif", "cost.tif")
+
+filesoi <- list.files(landscape_dir, full.names = TRUE)[list.files(landscape_dir) %in% fileoi]
+all_cov <- terra::rast(filesoi)
+
+# read in bec data
+bec_dir = fid$sampling_input_exclusion[2]
+
+boi <- list.files(bec_dir, pattern = ".tif")
+
+
+for(b in boi) {
+  b <- boi[7]
+  boi_mask <- terra::rast(file.path(bec_dir, b)) 
+  names(boi_mask) = "mask"
+  bname <- gsub("_exclude_mask.tif", "", b)
+  
+  sample_layers_masked <- c(all_cov, boi_mask) %>%  
+    terra::mask(boi_mask) 
+  sample_layers_masked <- sample_layers_masked[[1:4]]
+  
+  terra::writeRaster( sample_layers_masked, file.path(clhs_outpath, paste0(bname,"_clhs_sample_mask.tif")), overwrite = TRUE)
+  
+  # create 10 different sample plans
+  for(rot in 1:5){ 
+    #rot = 1
+    sample_points <- create_clhs(all_cov = sample_layers_masked, 
+                                 num_slices = 5, 
+                                 to_include = NULL, 
+                                 n_points = 5 , 
+                                 min_dist = 1000,
+                                 num_sample = 5000000)
+    sample_points <- sample_points %>% 
+      dplyr::mutate(bgc = bname)
+    
+    sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".gpkg")),append=FALSE )
+    
+  }
+  
+} 
+
+```
+
