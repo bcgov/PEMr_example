@@ -50,6 +50,7 @@ fid <- setup_folders(project_name)
 
 Copy an aoi.gpkg (project boundary) into the Project /00_raw_inputs/10_vector/ folder.
 ```{r}
+
 aoi_snap <- function(aoi, method=c("expand","shrink"), buffer=0){
   ## testing
   # setwd("e:/workspace/2019/PEM_2020/PEMWorkFlow/")
@@ -99,18 +100,18 @@ aoi_snap <- function(aoi, method=c("expand","shrink"), buffer=0){
 ```
 
 ```{r function to create aoi bounding box}
-create_aoi <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
-                       out_dir = file.path(fid$shape_dir_1010[1]), 
-                       aoi_vec = "aoi.gpkg",
-                       buffer=0){       ## input raster
-aoi <- st_read(file.path(aoi_dir, aoi_vec))
-aoi_bb <- aoi_snap(aoi, method = "expand", buffer = buffer)
-aoi <- st_read(file.path(aoi_dir, aoi_vec))
-aoi_ls <- aoi_snap_landscape(aoi, "expand")
-sf::st_write(aoi, file.path(out_dir,"aoi.gpkg"), append = FALSE)
-sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
-sf::st_write(aoi_ls, file.path(out_dir,"aoi_watershed.gpkg"), append = FALSE)
-}
+# create_aoi <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
+#                        out_dir = file.path(fid$shape_dir_1010[1]), 
+#                        aoi_vec = "aoi.gpkg",
+#                        buffer=0){       ## input raster
+# aoi <- st_read(file.path(aoi_dir, aoi_vec))
+# aoi_bb <- aoi_snap(aoi, method = "expand", buffer = buffer)
+# aoi <- st_read(file.path(aoi_dir, aoi_vec))
+# aoi_ls <- aoi_snap_landscape(aoi, "expand")
+# sf::st_write(aoi, file.path(out_dir,"aoi.gpkg"), append = FALSE)
+# sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
+# sf::st_write(aoi_ls, file.path(out_dir,"aoi_watershed.gpkg"), append = FALSE)
+# }
 ```
 
 
@@ -134,14 +135,14 @@ v
 ## Review data and make anyfixes
 Once the vector data is reviewed and edited where appropriate we can save a final version in the "clean input data folder". 
 ```{r copy clean vectors function}
-copy_clean_vectors <- function(origindir = fid$shape_dir_0010[1], 
-                       targetdir = fid$shape_dir_1010[1], 
-                       aoi_vec = "aoi.gpkg"){       ## input raster
-filestocopy <- list.files(path = origindir, pattern = ".gpkg",
-    recursive = TRUE)
-lapply(filestocopy, function(x) file.copy(paste(origindir, x, sep = "/"),
-    paste(targetdir, x, sep = "/"), recursive = FALSE, copy.mode = TRUE))
-}
+# copy_clean_vectors <- function(origindir = fid$shape_dir_0010[1], 
+#                        targetdir = fid$shape_dir_1010[1], 
+#                        aoi_vec = "aoi.gpkg"){       ## input raster
+# filestocopy <- list.files(path = origindir, pattern = ".gpkg",
+#     recursive = TRUE)
+# lapply(filestocopy, function(x) file.copy(paste(origindir, x, sep = "/"),
+#     paste(targetdir, x, sep = "/"), recursive = FALSE, copy.mode = TRUE))
+# }
 ```
 
 
@@ -154,19 +155,19 @@ copy_clean_vectors()
 The snapped `aoi` is used to create a raster template all generated covariates created to match selected template.
 
 ```{r create raster templates function}
-create_template <- function(aoi_bb = file.path(fid$shape_dir_1010[1],
-                                               "aoi_snapped.gpkg"), 
-                            res,
-                            outpath = fid$cov_dir_1020[2],
-                            filename = "template.tif"){
-    aoi_bb <- terra::vect(aoi_bb)
-    template <- terra::rast(aoi_bb, resolution = res)
-      terra::values(template) <- 0
-  res_name = paste0(res, 'm')
-    terra::writeRaster(template, file.path(outpath, res_name, filename), overwrite = TRUE)
-  return(template)
-
-}
+# create_template <- function(aoi_bb = file.path(fid$shape_dir_1010[1],
+#                                                "aoi_snapped.gpkg"), 
+#                             res,
+#                             outpath = fid$cov_dir_1020[2],
+#                             filename = "template.tif"){
+#     aoi_bb <- terra::vect(aoi_bb)
+#     template <- terra::rast(aoi_bb, resolution = res)
+#       terra::values(template) <- 0
+#   res_name = paste0(res, 'm')
+#     terra::writeRaster(template, file.path(outpath, res_name, filename), overwrite = TRUE)
+#   return(template)
+# 
+# }
 
 ```
 
@@ -199,19 +200,19 @@ plot(dem)
 
 ```{r read in Trim DEM from bcmaps}
 library(bcmaps)
-get_trim_dem <- function(aoi_bb = file.path(fid$shape_dir_1010[2],"aoi_snapped.gpkg"),
-                         res,
-                         filename = "dem.tif",
-                         out_dir = fid$cov_dir_1020[2]){
-aoi <- st_read(aoi_bb)
-  trim_raw <- bcmaps::cded_raster(aoi)
-trim <- terra::rast(trim_raw)
-res_name = paste0(res, 'm')
-template_file <- file.path(fid$cov_dir_1020[2],res_name, "template.tif")
-template <- terra::rast(template_file)
-trim <- terra::project(trim, template)
-terra::writeRaster(trim, file.path(out_dir, res_name, filename), overwrite = TRUE)
-}
+# get_trim_dem <- function(aoi_bb = file.path(fid$shape_dir_1010[2],"aoi_snapped.gpkg"),
+#                          res,
+#                          filename = "dem.tif",
+#                          out_dir = fid$cov_dir_1020[2]){
+# aoi <- st_read(aoi_bb)
+#   trim_raw <- bcmaps::cded_raster(aoi)
+# trim <- terra::rast(trim_raw)
+# res_name = paste0(res, 'm')
+# template_file <- file.path(fid$cov_dir_1020[2],res_name, "template.tif")
+# template <- terra::rast(template_file)
+# trim <- terra::project(trim, template)
+# terra::writeRaster(trim, file.path(out_dir, res_name, filename), overwrite = TRUE)
+# }
 
 ```
 
@@ -272,25 +273,26 @@ Create a bec raster to match the template sizes
 
 ```{r create rast from vector using template}
 ###create function
-rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = r5){
-  if (class(covar)[1] == "sf") {
-    aoi <- terra::vect(aoi)
-  }
-covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
-covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
-    unique() 
-covar_code <- covar_code %>% 
-    mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
-covar_sf <- dplyr::left_join(covar_sf, covar_code)
-covar_vect <- terra::vect(covar_sf)
-covar_rast <- terra::rasterize(covar_vect, template)
-return(covar_rast)
-}
+# rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = r5){
+#   if (class(covar)[1] == "sf") {
+#     aoi <- terra::vect(aoi)
+#   }
+# covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
+# covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
+#     unique() 
+# covar_code <- covar_code %>% 
+#     mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
+# covar_sf <- dplyr::left_join(covar_sf, covar_code)
+# covar_vect <- terra::vect(covar_sf)
+# covar_rast <- terra::rasterize(covar_vect, template)
+# return(covar_rast)
+# }
 ```
 
 
 ```{r}
-bec_ras5 <- rasterize_to_template()
+#bec_ras5 <- rasterize_to_template()
+bec_ras5 <- create_bgc_template()
 terra::writeRaster(bec_ras5, file.path(fid$cov_dir_1020[2], "5m", "bec.tif"), overwrite = TRUE)
 ```
 
