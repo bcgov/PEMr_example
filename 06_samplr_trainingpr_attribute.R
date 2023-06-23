@@ -52,3 +52,6 @@ source("_covar_list_fn.r")
 mcols = covar_list("deception")
 
 final_tp <- prep_tps_covs(tpts, mcols, outdir = fid$model_inputs0310[2])
+
+# write out the training points
+write.csv(final_tp, file.path(fid$model_inputs0310[2], "training_pts.csv"), row.names = FALSE) 

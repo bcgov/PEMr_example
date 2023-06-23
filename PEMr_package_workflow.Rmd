@@ -44,6 +44,7 @@ In the example below it is assumed that you are running the following within a n
 ```{r create project folders}
 project_name <- "BaboonProcess_AOI"
 fid <- setup_folders(project_name)
+
 ```
 
 ##Add base data to the folders
@@ -112,6 +113,7 @@ aoi_snap <- function(aoi, method=c("expand","shrink"), buffer=0){
 # sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
 # sf::st_write(aoi_ls, file.path(out_dir,"aoi_watershed.gpkg"), append = FALSE)
 # }
+
 ```
 
 
@@ -401,6 +403,7 @@ start <- st_as_sf(my.df, coords = c("x","y"),
 ```
 
 ## Generate cost layer (this needs work)
+
 ```{r Cost layer}
 # devtools::load_all("D:\\GitHub\\PEMsamplr")
 # dem <- terra::rast(file.path( fid$cov_dir_1020[2],"25m", "dem_cost.tif"))

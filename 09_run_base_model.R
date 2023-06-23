@@ -10,8 +10,9 @@ library(dplyr)
 # load all pem packages
 run_pemr()
 
-#fid <- setup_folders("Deception_AOI")
-fid <- setup_folders("DateCreek_AOI")
+aoi <- "Deception"
+
+fid <- setup_folders(paste0(aoi,"_AOI"))
 
 in_dir <- fid$model_inputs0310[2]
 
@@ -31,29 +32,28 @@ bgc_pts_subzone <- readRDS(file.path(fid$model_inputs0310[2], "model_input_pts.r
 
 
 
-
 # 1) run basic model with no balance options
 
 model_bgc <- lapply(names(bgc_pts_subzone), function(xx){
   
-   xx <- names(bgc_pts_subzone[1])
+  # xx <- names(bgc_pts_subzone[1])
   
   alldat = bgc_pts_subzone[[xx]]
   
   # for Date Creek 
-        utid = unique(alldat$tid)
-        
-        if("ichmc2_1.1_1" %in% utid){
-          alldat =  alldat %>% 
-            filter(!tid == "ichmc2_1.1_1")
-          print("filtering ichmc2 tids")
-        }
-        if("ichmc1_2.3_8" %in% utid){
-          alldat =  alldat %>% 
-            filter(!tid == "ichmc1_2.3_8")
-          
-          print("filtering ichmc1 tids")
-        }
+  # utid = unique(alldat$tid)
+  # 
+  # if("ichmc2_1.1_1" %in% utid){
+  #   alldat =  alldat %>% 
+  #     filter(!tid == "ichmc2_1.1_1")
+  #   print("filtering ichmc2 tids")
+  # }
+  # if("ichmc1_2.3_8" %in% utid){
+  #   alldat =  alldat %>% 
+  #     filter(!tid == "ichmc1_2.3_8")
+  #   
+  #   print("filtering ichmc1 tids")
+  # }
   #
   
   
@@ -93,29 +93,4 @@ model_bgc <- lapply(names(bgc_pts_subzone), function(xx){
   model_report(train_data, baseout, outDir)
   
 })
-
-
-
-# Determine optimum Theta value for the metric of choice
-
-bgcs <- list.dirs(fid$model_draft[2], recursive = T)
-
-bgcs <- bgcs[endsWith(bgcs,"/raw_outputs")]
-
-for(i in bgcs){
-  
-  #i = bgcs[1]
-  
-  out_dir <- gsub("/raw_outputs", "", i)
-  
-  acc_out <- generate_theta_metrics(i)
-  write.csv(acc_out, file.path(out_dir, "compiled_theta_results_raw.csv"), row.names = FALSE)
-  
-  theta_thresh <- generate_theta_threshold(acc_out)
-  write.csv(theta_thresh, file.path(out_dir, "theta_threshold_raw.csv"),row.names = FALSE)
-  
-}
-
-
-
 
