@@ -3,9 +3,9 @@ library(PEMr)
 run_pemr()
 
 #remotes::install_github("bcgov/PEMprepr", build_vignettes = TRUE)
-devtools::load_all("D:\\PEM_DATA\\PEMprepr")
-devtools::load_all("D:\\PEM_DATA\\PEMsamplr")
-#devtools::install_github("kdaust/clhs") 
+devtools::load_all("D:\\GitHub\\PEMprepr")
+devtools::load_all("D:\\GitHub\\PEMsamplr")
+devtools::install_github("kdaust/clhs") 
 
 library(PEMprepr)
 library(PEMsamplr)
@@ -15,7 +15,7 @@ library(terra)
 library(clhs)
 library(foreach)
 
-fid <- setup_folders("DateCreek_AOI")
+fid <- setup_folders("BaboonProcess_AOI")
 
 ###############################################################
 # 1) generate clhs
@@ -31,13 +31,13 @@ filesoi <- list.files(landscape_dir, full.names = TRUE)[list.files(landscape_dir
 all_cov <- terra::rast(filesoi)
 
 # read in bec data
-bec_dir = fid$sampling_input_exclusion[2]
+bec_dir = fid$sampling_input_exclusion_bgc[2]
 
 boi <- list.files(bec_dir, pattern = ".tif")
 
 
 for(b in boi) {
-  b <- boi[7]
+  b <- boi[1]
   boi_mask <- terra::rast(file.path(bec_dir, b)) 
   names(boi_mask) = "mask"
   bname <- gsub("_exclude_mask.tif", "", b)
@@ -50,7 +50,7 @@ for(b in boi) {
   
   # create 10 different sample plans
   for(rot in 1:5){ 
-    #rot = 1
+    rot = 1
     sample_points <- create_clhs(all_cov = sample_layers_masked, 
                                  num_slices = 5, 
                                  to_include = NULL, 
