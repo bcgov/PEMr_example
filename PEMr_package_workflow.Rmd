@@ -44,7 +44,7 @@ In the example below it is assumed that you are running the following within a n
 
 # Project folder setup
 ```{r create project folders}
-project_name <- "Buck_AOI"
+project_name <- "Babine_AOI"
 fid <- setup_folders(project_name)
 
 ```
@@ -292,26 +292,27 @@ Create a bec raster to match the template sizes
 
 ```{r create rast from vector using template}
 ###create function
-# rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = r5){
-#   if (class(covar)[1] == "sf") {
-#     aoi <- terra::vect(aoi)
-#   }
-# covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
-# covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
-#     unique() 
-# covar_code <- covar_code %>% 
-#     mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
-# covar_sf <- dplyr::left_join(covar_sf, covar_code)
-# covar_vect <- terra::vect(covar_sf)
-# covar_rast <- terra::rasterize(covar_vect, template)
-# return(covar_rast)
-# }
+library(dplyr)
+rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = r5){
+  if (class(covar)[1] == "sf") {
+    aoi <- terra::vect(aoi)
+  }
+covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
+covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
+    unique()
+covar_code <- covar_code %>%
+    mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
+covar_sf <- dplyr::left_join(covar_sf, covar_code)
+covar_vect <- terra::vect(covar_sf)
+covar_rast <- terra::rasterize(covar_vect, template)
+return(covar_rast)
+}
 ```
 
 
 ```{r}
-#bec_ras5 <- rasterize_to_template()
-bec_ras5 <- create_bgc_template()
+bec_ras5 <- rasterize_to_template()
+#bec_ras5 <- create_bgc_template()
 terra::writeRaster(bec_ras5, file.path(fid$cov_dir_1020[2], "5m", "bec.tif"), overwrite = TRUE)
 ```
 
@@ -519,8 +520,8 @@ create_samplr_covariates <- function(dtm = file.path(fid$sampling_input_exclusio
 
 ## Create Landcape variables
 ```{r}
-devtools::load_all("D:\\GitHub\\PEMsamplr")
-sagapath = "C:/saga-9.0.2_x64/"
+#devtools::load_all("D:\\GitHub\\PEMsamplr")
+sagapath = "C:/SAGA/"
 create_samplr_covariates()
                      
 ```
@@ -818,7 +819,7 @@ terra::writeRaster(cost_masked,
 
 ```{r}
 create_bgc_mask <- function(vec_dir = file.path(fid$shape_dir_1010[2], "bec.gpkg"),
-                            cost_masked = file.path(fid$sampling_input_landscape[2], "cost_penalty.tif"), 
+                            cost_masked = file.path(fid$sampling_input_landscape[2], "cost.tif"), 
                             out_dir = fid$sampling_input_exclusion_bgc[2]) {
 
   # exclude water:
@@ -878,17 +879,19 @@ create_bgc_mask()
  #devtools::install_github("kdaust/clhs") 
  require(clhs)
 # require(data.table)
-create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
-                        n_points = 5, min_dist = 1000, num_sample = 5000000, cost = "cost"){
+create_clhs <- function(all_cov, num_slices = 5, to_include = NULL, which.factor = c(2:nlyr(all_cov)),
+                        n_points = 5, min_dist = 900, num_sample = 5000000, cost = "cost"){
   if(num_slices < 1) stop("Hold up! Must have at least one slice.")
 
   layer_names <- names(all_cov)
   samp_dat <- terra::spatSample(all_cov , size = num_sample, method = "regular", xy = TRUE, as.df = F) # sample raster
-  samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost), !is.na(landclass))
+  samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost))
 
   coords <- samp_dat[,c("x","y")]
   curr_dat <- samp_dat[,layer_names]
-
+  for(fnum in which.factor) curr_dat[,fnum] <- as.factor(curr_dat[,fnum])
+  # curr_dat <- curr_dat[,lapply(.SD, as.factor), .SDcols = layer_names[which.factor]]
+  print(str(curr_dat))
   ##setup initial data
   if(is.null(to_include)){ ##nothing to include
     inc_idx <- NULL
@@ -910,7 +913,7 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
     for(i in 1:5){
       templhs <- clhs(curr_dat, size = size,
                       must.include = inc_idx,
-                      iter = 200000 ,
+                      iter = 10000 ,
                       simple = FALSE,
                       progress = TRUE,
                       cost = cost,
@@ -923,16 +926,15 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
 
   }else{
     message("Gen-R-ating multiple slices...")
-    #inc_idx = NULL
+    print(str(curr_dat))
     for(snum in 1:num_slices){
        #snum = 1
       #
       for(i in 1:5){
-        i=1
         templhs <- clhs(curr_dat,
                         size = snum * size,
                         must.include = inc_idx,
-                        iter = 20000 ,
+                        iter = 10000 ,
                         simple = FALSE,
                         progress = TRUE,
                         cost = "cost",
@@ -1015,18 +1017,19 @@ for(b in boi) {
    # sample_layers_masked$dah <- as.factor(sample_layers_masked$dah)
    #  sample_layers_masked$mrvbf <- as.factor(sample_layers_masked$mrvbf)
   terra::writeRaster(sample_layers_masked_cost, file.path(fid$samplingplan_clhs[2], paste0(bname,"_clhs_sample_mask_cost.tif")), overwrite = TRUE)
-
+ 
   # create 10 different sample plans
   for(rot in 1:5){ 
     rot = 5
     sample_points <- create_clhs(all_cov = sample_layers_masked, 
-                                 num_slices = 5, 
+                                 num_slices = 1, 
                                  to_include = NULL, 
-                                 n_points = 5, 
-                                 min_dist = 100,
+                                 which.factor = c(2,3,4),
+                                 n_points = 25, 
+                                 min_dist = 500,
                                  num_sample = 500000,
                                  cost = "cost")
-    sample_points <- sample_points #%>%   dplyr::mutate(bgc = bname)
+    #sample_points <- sample_points #%>%   dplyr::mutate(bgc = bname)
     sf::st_write(sample_points, file.path(clhs_outpath, paste0("_clhs_sample_",rot,".gpkg")),append=FALSE )
     #sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname, "_clhs_sample_",rot,".gpkg")),append=FALSE )
     
@@ -1034,5 +1037,7 @@ for(b in boi) {
   
 } 
 
+plot(sample_layers_masked[[1]])
+plot(sample_points, add = T)
 ```
 
