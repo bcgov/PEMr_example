@@ -28,8 +28,8 @@ library(terra)
 library(PEMsamplr)
 require(clhs)
 require(data.table)
-
-devtools::load_all("D:\\GitHub\\PEMprepr")
+ #devtools::install_github("kdaust/clhs") 
+#devtools::load_all("D:\\GitHub\\PEMprepr")
 #devtools::load_all("D:\\GitHub\\PEMsamplr")
 ```
 
@@ -44,10 +44,29 @@ In the example below it is assumed that you are running the following within a n
 
 # Create or read in existing folder structure for AOI
 ```{r create project folders}
-project_name <- "BaboonProcess_AOI"
+project_name <- "WetzinkwaProcess_AOI"
 fid <- setup_folders(project_name)
 ```
 Create new aoi bounding box large enough to contain all access roads if the start point occurs outside the AOI
+```{r function to create aoi bounding box}
+
+create_aoi <- function(aoi_dir = file.path(fid$shape_dir_0010[2]), 
+                       out_dir = file.path(fid$shape_dir_1010[1]), 
+                       aoi_vec = "aoi.gpkg",
+                       buffer=1000){       ## input raster
+aoi <- st_read(file.path(aoi_dir, aoi_vec))
+aoi_bb <- aoi_snap(aoi, method = "expand")
+aoi <- st_read(file.path(aoi_dir, aoi_vec))
+#aoi_ls <- aoi_snap_watershed(aoi, "expand")
+aoi_buffered <- aoi_snap(aoi, method = "expand", buffer = buffer)
+sf::st_write(aoi, file.path(out_dir,"aoi.gpkg"), append = FALSE)
+sf::st_write(aoi_bb, file.path(out_dir,"aoi_snapped.gpkg"), append = FALSE)
+sf::st_write(aoi_buffered, file.path(out_dir,"aoi_buffered.gpkg"), append = FALSE)
+#sf::st_write(aoi_ls, file.path(out_dir,"aoi_watershed.gpkg"), append = FALSE)
+}
+
+```
+
 ```{r create aoi bounding box}
 create_aoi(buffer = 5000)
 
@@ -689,7 +708,7 @@ costprep <- prep_cost_layers_lcp(x = dem,
 
 ```
 
-create accumulated cost layer
+create accumulated cost layer function
 ```{r Accumulated Cost layer function}
 # 
 create_accum_cost <- function(x=costprep, origin, FUN = mean, rescale = FALSE) {
@@ -767,7 +786,7 @@ bec_ras5 <- rasterize_to_template()
 terra::writeRaster(bec_ras5, file.path(fid$cov_dir_1020[2], "5m", "bec.tif"), overwrite = TRUE)
 ```
 ## Adjust cost layer
-```{r create_cost penalty fucntion}
+```{r create_cost penalty function}
 create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]), 
                                                     dem = file.path(fid$sampling_input_exclusion_raster[2], "dem_cost.tif"), 
                                                     cost = file.path(fid$sampling_input_exclusion_raster[2], "cost_raw.tif"), 
@@ -1164,7 +1183,7 @@ create_bgc_mask()
 
 
 ```{r clhs function}
- #devtools::install_github("kdaust/clhs") 
+
 require(clhs)
 require(data.table)
 require(dplyr)
@@ -1323,7 +1342,7 @@ for(b in boi) {
                                  num_sample = 500000,
                                  cost = "cost")
     sample_points <- sample_points %>%   dplyr::mutate(bgc = bname)
-    fwrite(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".csv")),overwrite = TRUE  )
+    fwrite(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".csv")))
     sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".gpkg")),append=FALSE )
     #sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname, "_clhs_sample_",rot,".gpkg")),append=FALSE )
 
