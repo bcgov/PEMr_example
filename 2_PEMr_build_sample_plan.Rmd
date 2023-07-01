@@ -1,0 +1,1303 @@
+---
+title: "ML_PEM full workflow"
+subtitle: "Step through building a cLHS sample plan"
+author: "W. H.MacKenzie"
+date: "2023-06-19"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Set up new study area}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options:
+  chunk_output_type: console
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(  collapse = TRUE,  comment = "#>")
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+# remotes::install_github('bcgov/PEMr', build_vignettes = FALSE)
+
+library(PEMr)
+run_pemr()
+library(PEMprepr)
+library(ggplot2)
+library(sf)
+library(terra)
+library(PEMsamplr)
+require(clhs)
+require(data.table)
+
+devtools::load_all("D:\\GitHub\\PEMprepr")
+#devtools::load_all("D:\\GitHub\\PEMsamplr")
+```
+
+`PEMr`, short for _Predictive Ecosystem Mapping in R is a set of packages for developing a machine learning PEM following the process of MacKenzie et al. 
+See [BC-BEC](https://www.for.gov.bc.ca/HRE/becweb/index.html)
+and [`PEMr`](https://github.com/bcgov/PEMr) on _GitHub_for details about the BC BEC classification system and, the PEM Project.
+
+In the example below it is assumed that you are running the following within a new R project.
+## Project Set up. 
+1) Set up a new R studio project for your PEM modelling. 
+2) For each study area a folder structure based on your project/AOI name is constructed under this Rproject folder 
+
+# Create or read in existing folder structure for AOI
+```{r create project folders}
+project_name <- "WetzinkwaProcess_AOI"
+fid <- setup_folders(project_name)
+
+```
+Create new aoi bounding box large enough to contain all access roads if the start point occurs outside the AOI
+```{r create aoi bounding box}
+create_aoi(buffer = 5000)
+
+```
+
+##BUILD FOR SAMPLE PLAN
+
+## get TRIM for broader area for cost layers
+```{r dem_cost function}
+library(bcmaps)
+get_trim_dem_cost <- function(aoi_bb = file.path(fid$shape_dir_1010[1],"aoi_buffered.gpkg"),
+                         out_dir = fid$sampling_input_exclusion_raster[2],
+                         filename = "dem_cost.tif"){
+aoi = terra::vect(aoi_bb)
+  template_cost <- terra::rast(aoi, resolution = 25)
+      terra::values(template_cost) <- 0
+aoi <- st_read(aoi_bb)
+  trim_raw <- bcmaps::cded_raster(aoi)
+  trim_raw <- terra::rast(trim_raw)
+trim_cost <- terra::project(trim_raw, template_cost)
+terra::writeRaster(trim_cost, file.path(out_dir, filename), overwrite = TRUE)
+}
+
+```
+
+Get TRIM data for cost calculation
+```{r}
+get_trim_dem_cost()
+```
+
+```{r roads function}
+get_cost_roads <- function(in_aoi = file.path(fid$shape_dir_1010[2],"aoi_buffered.gpkg"), 
+                      out_path= file.path(fid$sampling_input_exclusion_vector[2]), 
+                      filename = "road_network_cost.gpkg") {
+  # The main road network layer has too many roads in it. Filter it down to only
+  # include named roads and combine those with actual mapped FSR's
+
+  #in_aoi = "aoi_cost.gpkg"
+  aoi = st_read(in_aoi)
+  message("\rDownloading Road network")
+  roads <- bcdc_query_geodata("bb060417-b6e6-4548-b837-f9060d94743e") %>%
+    bcdata::filter(BBOX(local(st_bbox(aoi)))) %>% # slightly larger extent
+    bcdata::select(id, ROAD_NAME_FULL, ROAD_CLASS, ROAD_SURFACE, FEATURE_LENGTH_M) %>%
+    collect() %>%
+    dplyr::select(id, ROAD_NAME_FULL,ROAD_SURFACE, ROAD_CLASS,FEATURE_LENGTH_M) %>%
+       {if(nrow(.) > 0) {
+      st_intersection(., aoi) %>%
+       st_cast("MULTILINESTRING")
+    } else .}
+
+  fsr <- bcdc_query_geodata("9e5bfa62-2339-445e-bf67-81657180c682") %>%
+    bcdata::filter(
+      BBOX(local(st_bbox(aoi)))) %>%
+    collect() %>%
+    dplyr::select(id, FILE_TYPE_DESCRIPTION, FEATURE_LENGTH_M) %>%
+    dplyr::rename(ROAD_CLASS = FILE_TYPE_DESCRIPTION) %>%
+    dplyr::mutate(ROAD_CLASS = dplyr::case_when(
+      ROAD_CLASS == "Forest Service Road" ~ "resource",
+      ROAD_CLASS == "Road Permit" ~ "unclassifed")) %>%
+    dplyr::mutate(ROAD_SURFACE = dplyr::case_when(
+    ROAD_CLASS == "resource" ~ "loose",
+    ROAD_CLASS == "unclassifed" ~ "rough")) %>%
+    {if(nrow(.) > 0) {
+      st_intersection(., aoi) %>%
+        st_cast("MULTILINESTRING")
+    } else .}
+
+  road_merge <- dplyr::bind_rows(roads, fsr)
+
+  st_write(road_merge, file.path(out_path, filename), append = FALSE)
+}
+```
+Download cost roads for larger area
+```{r}
+get_cost_roads()
+```
+
+### Get or make start point for calculation of AOI.
+If starting city is in AOI choose from select. If outside add starting point coordinates in UTM.
+If more than one possible starting area options: equidistant points. Build two cost-layers and merge.
+
+```{r}
+
+cities <- terra::vect(file.path(fid$shape_dir_1010, "major_towns_bc.gpkg"))
+### this does not work if outside of AOI
+nearest_town = "Smithers"
+start <- cities[cities$NAME == nearest_town,"NAME"]
+start <- st_as_sf(start)
+mapview::mapview(start)
+###Or find starting point in QGIS on road and enter here
+#my.df <- read.table(text=" x    y
+#                     935710    1083059", header = TRUE)# Deception
+
+# my.df <- read.table(text=" x    y
+#                      972620    1068774", header = TRUE)#Baboon
+# 
+# 
+# start <- st_as_sf(my.df, coords = c("x","y"),
+#                   crs = 3005) %>%
+#   as("Spatial")
+# 
+# mapview::mapview(start)
+```
+
+
+
+
+## Prepare conductance for cost layer
+```{r}
+prep_cost_layers_lcp <- function(x, cost_function = "tobler offpath", neighbours = 16, roads, crit_slope = 12, max_slope = 45, percentile = 0.5, exaggeration = TRUE) {
+  #source("R/prep_cost_layer_LCP_utils.R")
+  # x = terra::rast("D:/GitHub/PEMr_example/DeceptionProcess_AOI/20_sample_plan/10_standard_sample/10_input_raster/exclusion/raster/dem_cost.tif")
+  # roads = st_read("D:/GitHub/PEMr_example/DeceptionProcess_AOI/10_clean_inputs/10_vector/road_network.gpkg")
+  # neighbours = 8
+  # cost_function = "tobler offpath"
+  # crit_slope = 12
+  # max_slope = 40
+  # percentile = 0.5
+  # exaggeration = FALSE
+  # multistart = TRUE
+
+  if(terra::is.lonlat(x)) {
+    stop("supplied digital elevation model (DEM) is invalid. x argument expects DEM with a projected coordinate system")
+  }
+
+    neighbours <- neighbourhood(neighbours = neighbours)
+
+  # prepare slope component
+
+  # identify cells and which are NA
+  cells <- which(!is.na(terra::values(x)))
+  na_cells <- which(is.na(terra::values(x)))
+
+  # prepare roads layer
+  roads$ROAD_CLASS[roads$trail == 1] <- "trail"
+  roads <- roads[,"ROAD_CLASS"]
+  colnames(roads)[1] <- "road_surface"
+  rdsAll <-  data.table::as.data.table(roads) %>% sf::st_as_sf()
+
+  rSpd <- data.table::data.table(
+    road_surface = c("resource", "unclassified","unclassifed", "recreation", "trail", "local", "collector", "highway", "service", "arterial", "freeway", "strata", "lane", "private", "yield", "ramp", "restricted", "water", "ferry", "boat", "driveway"),
+    speed_kmh = c(80, 30, 30, 50, 4.5, 50, 80, 80, 50, 80, 80, 30, 30, 4.5, 30, 60, 4.5, 0.1, 0.1,0.1, 4.5))
+  #"speed" = c(3000, 3000, 5000, 4.5, 5000, 8000, 8000, 50, 8000, 8000, 3000, 3000, 4.5, 3000, 6000, 4.5, 0.1, 3000, 4.5, 3000))
+
+  # check that all road types are include?
+
+  rSpd[,speed := speed_kmh/3.6] ##convert to m/s
+
+  rdsAll <- merge(rdsAll, rSpd, by = "road_surface", all = F)
+  rdsAll <- rdsAll[,"speed"]
+
+  #   # create a roads raster (buffered)
+  rdsAll <- sf::st_buffer(rdsAll, dist = 25, endCapStyle = "SQUARE", joinStyle = "MITRE")
+  rdsAll <- sf::st_cast(rdsAll, "MULTIPOLYGON")
+  rdsRast <- terra::rasterize(rdsAll, x, field = "speed", fun = "max")
+  rdsRast[is.nan(rdsRast[])] <- NA
+
+  # identify cells and which are NA
+  road_cells <- which(!is.na(terra::values(rdsRast)))
+
+  not_road_cells <- which(is.na(terra::values(rdsRast)))
+
+  # get cells that are adjacent (cells = cells or road_cells)
+  radj <- terra::adjacent(x = rdsRast, cells = cells, directions = neighbours, pairs = TRUE)
+  # remove any that are na
+  radj <- radj[!radj[,2] %in% na_cells,]
+
+  # get the actual values
+  road_values <- terra::values(rdsRast)[,1]
+
+  #Calculate the rise/run
+  rspeed <- road_values[radj[,1]]
+
+  # prepare slope component
+
+  # identify cells and which are NA
+  #cells <- which(!is.na(terra::values(x)))
+  #na_cells <- which(is.na(terra::values(x)))
+
+  # get cells that are adjacent
+  adj <- terra::adjacent(x = x, cells = cells, directions = neighbours, pairs = TRUE)
+  # remove any that are na
+  adj <- adj[!adj[,2] %in% na_cells,]
+
+  # get the actual values
+  elev_values <- terra::values(x)[,1]
+
+  message("calculating slope...")
+
+  #Calculate the rise/run
+  rise <- (elev_values[adj[,2]] - elev_values[adj[,1]])
+  # calculate the distance from each the adjacent pixal
+
+  run <- calculate_distance(x = x, adj = adj)
+
+  mathematical_slope <- rise/run
+
+  if(exaggeration) {
+    mathematical_slope <- ifelse(mathematical_slope > 0, mathematical_slope * 1.99, mathematical_slope * 2.31)
+  }
+
+  ncells <- length(cells) + length(na_cells)
+
+  # selectd which cost function to use
+  cf <- cost(cost_function = cost_function, crit_slope = crit_slope, percentile = percentile)
+
+  if(is.function(cost_function)) {
+    message(c("Applying ", deparse(body(cost_function)[[2]]), " cost function"))
+  } else{
+    message(c("Applying ", cost_function, " cost function"))
+  }
+
+  speed <- cf(mathematical_slope)
+
+  # update speed for pixels where there is a road
+#rspeed2 <- cbind(rspeed, speed) %>%  as.data.frame %>% filter(is.na(rspeed))
+
+  rspeed[is.na(rspeed)] <- speed ### this line returns error but seems to work
+
+
+  speed <- rspeed  #speed (km/h) - i think it's in m/s?
+
+  conductance <- speed/run
+
+  if(!is.function(cost_function)) {
+    if(cost_function %in% c("campbell 2019", "campbell")) {
+      # convert 30 degrees slope to percentage slope
+      max_slope <- tan(30*pi/180)*100
+    }
+  }
+
+  if(!is.null(max_slope)) {
+    # convert percentage max slope to mathematical max slope
+    # might consider putting in a steepness % of 15% as max?
+
+    max_slope <- max_slope/100
+    index <- abs(mathematical_slope) >= max_slope
+    conductance[index] <- 0
+  }
+
+  cs_matrix <- Matrix::Matrix(data = 0, nrow = ncells, ncol = ncells, sparse = TRUE)
+  cs_matrix[adj] <- conductance
+
+  cs <- list("conductanceMatrix" = cs_matrix,
+             "costFunction" = cost_function,
+             "maxSlope" = ifelse(!is.null(max_slope), paste0(max_slope*100, "%"), NA),
+             "exaggeration" = exaggeration,
+             "criticalSlope" = ifelse(test = !is.function(cost_function), yes = ifelse(test = cost_function == "wheeled transport", yes = paste0(max_slope, "%"), no = NA), no = NA),
+             "percentile" = ifelse(test = !is.function(cost_function), yes = ifelse(test = cost_function == "campbell 2019", yes = percentile, no = NA), no = NA),
+             "neighbours" = sum(neighbours, na.rm = TRUE),
+             "resolution" = terra::res(x),
+             "nrow" = terra::nrow(x),
+             "ncol" = terra::ncol(x),
+             "extent" = x@ptr$extent$vector,
+             "crs" = terra::crs(x, proj = TRUE))
+
+  class(cs) <- "conductanceMatrix"
+
+  return(cs)
+
+}
+
+```
+
+LCP Utils functions
+```{r}
+create_accum_cost <- function(x, origins, FUN = mean, rescale = FALSE) {
+
+  cs_rast <- terra::rast(nrow = x$nrow, ncol = x$ncol, xmin = x$extent[1], xmax = x$extent[2], ymin = x$extent[3], ymax = x$extent[4],crs = x$crs)
+
+  from_coords <- leastcostpath::get_coordinates(origins)
+  from_cell <- terra::cellFromXY(cs_rast, from_coords)
+
+  cm_graph <- igraph::graph_from_adjacency_matrix(x$conductanceMatrix, mode = "directed", weighted = TRUE)
+
+  igraph::E(cm_graph)$weight <- (1/igraph::E(cm_graph)$weight)
+
+  from_distances <- igraph::distances(cm_graph, v = from_cell,  mode="out", algorithm = "dijkstra")
+
+  accum_rasts <- c(rep(cs_rast, nrow(from_distances)))
+
+  for(i in 1:terra::nlyr(accum_rasts))  {
+
+    accum_rasts[[i]] <- terra::setValues(accum_rasts[[i]], from_distances[i,])
+
+  }
+
+  accum_rast <- terra::app(accum_rasts, fun = FUN)
+
+  accum_rast[is.infinite(accum_rast)] <- NA
+
+  if(rescale) {
+    rast_min <- terra::minmax(accum_rast)[1]
+    rast_max <- terra::minmax(accum_rast)[2]
+
+    accum_rast <- ((accum_rast - rast_min)/(rast_max - rast_min))
+  }
+
+  return(accum_rast)
+
+}
+
+get_coordinates <- function(x) {
+
+  if(inherits(x, "sf")) {
+    coords <- sf::st_coordinates(x)[, 1:2, drop = FALSE]
+  }
+  else if (inherits(x, "SpatVector")) {
+    coords <- terra::crds(x)
+  }
+  else if (inherits(x, "data.frame")) {
+    coords <- as.matrix(x)
+  }
+  else if (inherits(x, "matrix")) {
+    coords <- x
+  }
+  else if (inherits(x, "numeric")) {
+    coords <- matrix(x, nrow = 1)
+  }
+
+  return(coords)
+
+}
+
+lcp_dist_mat <- function(x, origins, destinations, cost_distance = FALSE) {
+
+  cs_rast <- terra::rast(nrow = x$nrow, ncol = x$ncol, xmin = x$extent[1], xmax = x$extent[2], ymin = x$extent[3], ymax = x$extent[4],crs = x$crs)
+
+  from_coords <- get_coordinates(origins)
+  to_coords <- get_coordinates(destinations)
+
+  from_cell <- terra::cellFromXY(cs_rast, from_coords)
+  to_cell <- terra::cellFromXY(cs_rast, to_coords)
+
+  cm_graph <- igraph::graph_from_adjacency_matrix(x$conductanceMatrix, mode = "directed", weighted = TRUE)
+
+  igraph::E(cm_graph)$weight <- (1/igraph::E(cm_graph)$weight)
+
+  message("Calculating distance matrix...")
+  cost <- igraph::distances(graph = cm_graph, v = from_cell, to = to_cell, mode = "out")
+  distMat <- as.matrix(cost)
+
+  return(distMat)
+}
+#
+neighbourhood <- function(neighbours) {
+
+  neighbours_32 <- matrix(c(0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1,
+                            1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0), nrow = 7, ncol = 7, byrow = TRUE)
+
+  neighbours_48 <- matrix(c(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1,
+                            1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0,
+                            1, 0, 1, 0, 1, 0, 1, 0, 1, 0), nrow = 9, ncol = 9, byrow = TRUE)
+
+  if (inherits(neighbours, "matrix")) {
+    neighbours <- neighbours
+  } else if (neighbours == 4) {
+    neighbours <- 4
+  } else if (neighbours == 8) {
+    neighbours <- 8
+  } else if (neighbours == 16) {
+    neighbours <- 16
+  } else if (neighbours == 32) {
+    neighbours <- neighbours_32
+  } else if (neighbours == 48) {
+    neighbours <- neighbours_48
+  } else (
+    stop(paste0("neighbours argument invalid. Expecting 4, 8, 16, 32, 48, or a matrix object"))
+  )
+
+  return(neighbours)
+}
+
+
+
+calculate_distance <- function(x, adj) {
+
+  xy1 <- terra::xyFromCell(x, adj[, 1])
+  xy2 <- terra::xyFromCell(x,adj[, 2])
+
+  xy3 <- (xy1[,1] - xy2[,1])^2
+  xy4 <- (xy1[,2] - xy2[,2])^2
+
+  dist <- sqrt(xy3 + xy4)
+
+  return(dist)
+
+}
+
+
+cost <- function(cost_function, crit_slope, percentile) {
+
+  cfs <- c("tobler", "tobler offpath", "davey", 'rees', "irmischer-clarke male", "irmischer-clarke offpath male", "irmischer-clarke female", "irmischer-clarke offpath female", "modified tobler", 'garmy', 'kondo-saino', "wheeled transport", "herzog", "llobera-sluckin", "naismith", "minetti", "campbell", "campbell 2019", "sullivan")
+
+  if (inherits(cost_function, "character")) {
+    if (!cost_function %in% cfs) {
+      stop("cost_function argument is invalid. See details for accepted cost functions")
+    }
+
+    # mathematical slope to degrees
+    slope2deg <- function(slope) { (atan(slope) * 180/pi)}
+
+    # degrees to radians
+    deg2rad <- function(deg) {(deg * pi) / (180)}
+
+    # Tobler Hiking Function measured in km/h. Divide by 3.6 to turn into m/s
+    if (cost_function == "tobler") {
+
+      # 3.6 converts from km/h to m/s
+      cf <- function(x) {
+        (6 * exp(-3.5 * abs(x + 0.05))) / 3.6
+      }
+    }
+
+    if (cost_function == "tobler offpath") {
+
+      cf <- function(x) {
+        ((6 * exp(-3.5 * abs(x + 0.05))) * 0.6) / 3.6
+      }
+
+    }
+
+    # requires mathematical slope to be in radians. Necessary to convert mathematical slope to degrees and then to radians
+    if (cost_function == "davey") {
+
+      cf <- function(x, y = 1.40, z = 2.8) {
+        x_deg <- slope2deg(x)
+        x_rad <- deg2rad(x_deg)
+
+        (y * exp(-z*abs(x_rad)))
+      }
+
+    }
+
+    if (cost_function == "rees") {
+
+      cf <- function(x) {
+        (1 / (0.75 + 0.09 * abs(x) + 14.6 * (abs(x))^2))
+      }
+
+    }
+
+    if (cost_function == "irmischer-clarke male") {
+
+      cf <- function(x) {
+        (0.11 + exp(-(abs(x) * 100 + 5)^2/(2 * 30^2)))
+
+      }
+
+    }
+
+    if (cost_function == "irmischer-clarke offpath male") {
+
+      cf <- function(x) {
+        (0.11 + 0.67 * exp(-(abs(x) * 100 + 2)^2/(2 * 30^2)))
+      }
+
+    }
+
+    if (cost_function == "irmischer-clarke female") {
+
+      cf <- function(x) {
+        (0.95 * (0.11 + exp(-(abs(x) * 100 + 5)^2/(2 * 30^2))))
+      }
+
+    }
+
+    if (cost_function == "irmischer-clarke offpath female") {
+
+      cf <- function(x) {
+        0.95 * (0.11 + 0.67 * exp(-(abs(x) * 100 + 2)^2/(2 * 30^2)))
+      }
+
+    }
+
+    if (cost_function == "modified tobler") {
+
+      cf <- function(x) {
+        (4.8 * exp(-5.3 * abs((x * 0.7) + 0.03)))
+      }
+
+    }
+
+    if (cost_function == "garmy") {
+
+      cf <- function(x) {
+        (4 * exp(-0.008 * (slope2deg(x)^2)))
+      }
+
+    }
+
+    if (cost_function == "kondo-saino") {
+
+      cf <- function(x) {
+        ifelse(abs(x) >= -0.07, (5.1 * exp(-2.25 * abs(x + 0.07))), (5.1 * exp(-1.5 * abs(x + 0.07))))
+      }
+
+    }
+
+    if (cost_function == "wheeled transport") {
+
+      cf <- function(x) {
+        (1/(1 + ((abs(x) * 100)/crit_slope)^2))
+      }
+
+    }
+
+    if (cost_function == "herzog") {
+
+      cf <- function(x) {
+
+        (1/((1337.8 * (x)^6) + (278.19 * (x)^5) - (517.39 * (x)^4) - (78.199 * (x)^3) + (93.419 * (x)^2) + (19.825 * (x)) + 1.64))
+
+      }
+
+    }
+
+    if (cost_function == "llobera-sluckin") {
+
+      cf <- function(x) {
+        (1/(2.635 + (17.37 * (x)) + (42.37 * (x)^2) - (21.43 * (x)^3) + (14.93 * (x)^4)))
+      }
+
+    }
+
+    if (cost_function == "naismith") {
+
+      cf <- function(x) {
+
+        x_deg <- slope2deg(x)
+        x_rad <- deg2rad(x_deg)
+
+        ifelse(x_deg > 0, (1 / (0.72 + 6 * tan(x_rad))), ifelse(x_deg <= -12, (1 / (0.72 - 2 * tan(x_rad))), ifelse(x_deg > -12 & x_deg <= -5, (1 / (0.72 + 2 * tan(x_rad))), 1.40)))
+      }
+    }
+
+    if (cost_function == "minetti") {
+
+      cf <- function(x) {
+        (1/((280.5 * abs(x)^5) - (58.7 * abs(x)^4) - (76.8 * abs(x)^3) + (51.9 * abs(x)^2) + (19.6 * abs(x)) + 2.5))
+      }
+    }
+
+    if (cost_function == "campbell") {
+
+      cf <- function(x) {
+        x_deg <- slope2deg(x)
+
+        1.662 - (5.191 * 10^-3) * x_deg - (1.127*10^-3) * x_deg^2
+      }
+
+    }
+
+    if (cost_function == "campbell 2019") {
+
+      percentile_choice <- c(0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9,
+                             0.95, 0.99)
+
+      if (!percentile %in% percentile_choice) {
+        stop("percentile argument is invalid. Expecting percentile value of 0.01, 0.05, 0.10, 0.15, 0.20,
+        0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95 or 0.99")
+      }
+
+      term_a <- c(-2.1, -1.527, -1.568, -1.626, -1.71, -1.822, -1.858, -1.891, -1.958, -2.05, -2.171, -2.317, -2.459, -2.647, -2.823,
+                  -3.067, -3.371, -3.661, -3.06, -3.485, -4)
+      term_b <- c(12.273, 14.041, 13.328, 11.847, 10.154, 8.827, 8.412, 8.584, 8.96, 9.402, 10.064, 10.712, 11.311, 12.089, 12.784,
+                  13.888, 15.395, 17.137, 16.653, 17.033, 13.903)
+      term_c = c(21.816, 36.813, 38.892, 38.231, 36.905, 37.111, 39.995, 44.852, 50.34, 56.172, 63.66, 71.572, 79.287, 89.143, 98.697,
+                 113.655, 134.409, 159.027, 138.875, 138.04, 123.515)
+      term_d = c(0.263, 0.32, 0.404, 0.481, 0.557, 0.616, 0.645, 0.649, 0.649, 0.646, 0.628, 0.608, 0.599, 0.576, 0.566, 0.518, 0.443,
+                 0.385, 0.823, 1.179, 1.961)
+      term_e = c(-0.00193, -0.00273, -0.00323, -0.00356, -0.00389, -0.00402, -0.0043, -0.00443, -0.00457, -0.0046, -0.00463, -0.00451,
+                 -0.00461, -0.00465, -0.00493, -0.00488, -0.00472, -0.00534, -0.01386, -0.01252, -0.01081)
+
+      lorentz_function_terms <- data.frame(percentile = percentile_choice, term_a, term_b, term_c, term_d, term_e)
+      terms <- lorentz_function_terms[lorentz_function_terms$percentile == percentile, ]
+
+      cf <- function(x){
+        (terms$term_c*(1/(pi*terms$term_b*(1+((slope2deg(x)-terms$term_a)/terms$term_b)^2)))+terms$term_d)+terms$term_e*slope2deg(x)
+      }
+    }
+
+    if (cost_function == "sullivan") {
+
+      percentile_choice <- c(0.167, 0.5, 0.833)
+
+      if (!percentile %in% percentile_choice) {
+        stop("percentile argument is invalid. Expecting percentile value of 0.167, 0.5, 0.833")
+      }
+
+      term_a <- c(-3.3717, -2.8292, -2.2893)
+      term_b <- c(25.8255, 20.9482, 19.4024)
+      term_c <- c(92.6594, 77.6346, 65.3577)
+      term_d <- c(-0.1624, 0.2228, 0.6226)
+      term_e <- c(0.0019, -0.0004, -0.0020)
+
+      lorentz_function_terms <- data.frame(percentile = percentile_choice, term_a, term_b, term_c, term_d, term_e)
+      terms <- lorentz_function_terms[lorentz_function_terms$percentile == percentile, ]
+
+      cf <- function(x){
+        (terms$term_c*(1/(pi*terms$term_b*(1+((slope2deg(x)-terms$term_a)/terms$term_b)^2)))+terms$term_d)+terms$term_e*slope2deg(x)
+      }
+
+    }
+
+  }
+
+  if(is.function(cost_function)) {
+
+    cf <- cost_function
+
+  }
+
+  return(cf)
+}
+
+```
+
+prepare conductance matrix
+```{r Cost layer}
+#devtools::load_all("D:\\GitHub\\PEMsamplr")
+dem <- terra::rast(file.path(fid$sampling_input_exclusion_raster[2], "dem_cost.tif"))
+#roads_network <- sf::st_read(file.path(fid$sampling_input_exclusion_vector[2], "road_network_cost.gpkg"), quiet = TRUE) %>%
+roads_network <- sf::st_read(file.path(fid$shape_dir_1010[2], "road_major.gpkg"), quiet = TRUE) %>%  sf::st_zm()
+plot(dem)
+mapview::mapview(roads_network)
+# check the roads layer
+check_road_layer(roads_network)
+mapview::mapview(roads_network)
+## generate transition layer
+costprep <- prep_cost_layers_lcp(x = dem,
+                                 cost_function = "tobler offpath",
+                                 neighbours = 16,
+                                 roads = roads_network,
+                                 crit_slope = 12,
+                                 max_slope = 45,
+                                 percentile = 0.5,
+                                 exaggeration = TRUE)
+
+```
+
+create accumulated cost layer
+```{r Accumulated Cost layer function}
+# 
+create_accum_cost <- function(x=costprep, origin, FUN = mean, rescale = FALSE) {
+
+  cs_rast <- terra::rast(nrow = x$nrow, ncol = x$ncol, xmin = x$extent[1], xmax = x$extent[2], ymin = x$extent[3], ymax = x$extent[4],crs = x$crs)
+#cs_rast <-terra::rast(x)
+origins = terra::vect(origin)
+  from_coords <- get_coordinates(origins)
+  from_cell <- terra::cellFromXY(cs_rast, from_coords)
+
+  cm_graph <- igraph::graph_from_adjacency_matrix(x$conductanceMatrix, mode = "directed", weighted = TRUE)
+
+  igraph::E(cm_graph)$weight <- (1/igraph::E(cm_graph)$weight)
+
+  from_distances <- igraph::distances(cm_graph, v = from_cell,  mode="out", algorithm = "dijkstra")
+
+  accum_rasts <- c(rep(cs_rast, nrow(from_distances)))
+
+  for(i in 1:terra::nlyr(accum_rasts))  {
+
+    accum_rasts[[i]] <- terra::setValues(accum_rasts[[i]], from_distances[i,])
+
+  }
+
+  accum_rast <- terra::app(accum_rasts, fun = FUN)
+
+  accum_rast[is.infinite(accum_rast)] <- NA
+
+  if(rescale) {
+    rast_min <- terra::minmax(accum_rast)[1]
+    rast_max <- terra::minmax(accum_rast)[2]
+
+    accum_rast <- ((accum_rast - rast_min)/(rast_max - rast_min))
+  }
+
+  return(accum_rast)
+
+}
+```
+
+## Build raw accumulated cost layer
+Need to add function to combine cost layers build for different starting points
+```{r build raw cost layer}
+acost <- create_accum_cost(x = costprep, origin = start, FUN = min)
+names(acost) = "cost"
+plot(acost)
+terra::writeRaster(acost, file.path(fid$sampling_input_exclusion_raster[2], "cost_raw.tif"), overwrite = TRUE)
+```
+## Adjust cost layer
+```{r create_cost penalty fucntion}
+create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]), 
+                                                    dem = file.path(fid$sampling_input_exclusion_raster[2], "dem_cost.tif"), 
+                                                    cost = file.path(fid$sampling_input_exclusion_raster[2], "cost_raw.tif"), 
+                                snap_aoi=  file.path(fid$shape_dir_1010[2],"aoi_snapped.gpkg"),
+                                                    costval = 3000,
+                                                    vri_cost = 2500, 
+                                                    calc_by_qq = TRUE) {
+
+.assign_highcost = function(shape, crs = 3005, costval, cost) {
+
+  hcsf <- sf::st_read(shape) %>%
+    sf::st_set_crs(crs) %>%
+    dplyr::mutate(cost = costval) %>%
+    dplyr::select(cost) %>%
+    sf::st_buffer(dist = 150) %>%
+    sf::st_cast("MULTIPOLYGON")
+
+  rhc <- terra::rasterize( hcsf, cost, field = "cost", fun = "max")
+  return(rhc)
+}
+  
+ dem = terra::rast(dem) 
+ cost = terra::rast(cost)
+
+
+    if (calc_by_qq == T){
+
+    qq <- terra::global(cost, quantile, probs = c(0.65, 0.70), na.rm = T)    # calculate 65% and 70% quantiles if determining the high cost threshold
+
+    vri_cost <- qq$X65.
+    costval <- qq$X70.
+
+  }
+
+
+  
+  # 1. Assign high cost for cutblocks
+  if(file.exists(file.path(vec_dir, "cutblocks.gpkg"))){
+    rcutblock<- .assign_highcost(file.path(vec_dir, "cutblocks.gpkg"), costval = costval, cost = cost)
+    hc <- terra::cover(rcutblock, cost)
+  }
+
+  # 2. Assign high cost to age class 1 and 2
+  if(file.exists(file.path(vec_dir, "vri_class1_2.gpkg"))){
+  rvri12_class <- .assign_highcost(file.path(vec_dir, "vri_class1_2.gpkg"), costval = costval, cost = cost)
+  hc <- terra::cover( rvri12_class, hc)
+
+  }
+
+  # 3. Assign a slightly lower cost to age class 3.
+  if(file.exists(file.path(vec_dir, "vri_class3.gpkg"))){
+    rvri3_class <- .assign_highcost(file.path(vec_dir, "vri_class3.gpkg"), costval = vri_cost, cost = cost)
+    hc <- terra::cover(rvri3_class, hc)
+  }
+
+  # for some AOIS;
+  # 3a Assign a high cost to deciduous leading species area
+
+  if(file.exists(file.path(vec_dir, "vri_decid.gpkg"))){
+
+   rvri_decid <- .assign_highcost(file.path(vec_dir, "vri_decid.gpkg"), costval = costval,cost = cost)
+   hc <- terra::cover( rvri_decid, hc )
+  }
+
+  # 4. Assign high cost to private lands
+  if(file.exists(file.path(vec_dir, "private.gpkg"))){
+
+  rpriv <- .assign_highcost(file.path(vec_dir, "private.gpkg"), costval = costval, cost = cost)
+  hc <- terra::cover( rpriv, hc)
+  }
+
+  # 5. Add high cost for high and medium intensity fire areas or all fires
+  if(file.exists(file.path(vec_dir, "fire_int.gpkg"))){
+  rfireint <- .assign_highcost(file.path(vec_dir,"fire_int.gpkg"), costval = costval, cost = cost)
+  hc <- terra::cover(hc, rfireint)
+  }
+
+  # 6. Add high cost for all fires
+  if(file.exists(file.path(vec_dir, "fires.gpkg"))){
+  rfires <- .assign_highcost(file.path(vec_dir,"fires.gpkg"), costval = costval, cost = cost)
+  hc <- terra::cover(hc,rfires)
+
+  }
+
+  # 7. Assign high cost to transmission lines
+  if(file.exists(file.path(vec_dir, "translines.gpkg"))){
+  rtrans <- .assign_highcost(file.path(vec_dir,"translines.gpkg"), costval = costval, cost = cost)
+  hc <- terra::cover(hc, rtrans)
+  }
+
+
+  # 8. Very steep areas
+  # slope <- terra::terrain(dem, v = "slope", neighbors = 8, unit = "degrees") # convert these radians to rise/run in next line
+  # # add a threshold value here
+  # # degrees (45 degrees = 100%, use around 30 degrees ~ 60% )
+  # 
+  #  m <- c( 0, 30, NA,
+  #         30, 45, costval)
+  # 
+  #   rclmat <- matrix(m, ncol=3, byrow =TRUE)
+  #   rc <- terra::classify(slope, rclmat)
+  # 
+  #   hc_out  <- terra::cover(hc, rc)
+    aoi_snapped <- terra::vect(snap_aoi)
+    hc_out <- terra::crop(hc, aoi_snapped)
+    names(hc_out)<- "cost"
+
+    return(hc_out)
+
+}
+
+```
+Create final cost layer and trim back to snapped AOI
+```{r}
+cost_penalty <- create_cost_penalty()
+terra::writeRaster(cost_penalty, 
+                   file.path(fid$sampling_input_landscape[2],  
+                             "cost_penalty.tif"), overwrite = TRUE)
+```
+
+```{r}
+create_samplr_covariates <- function(dtm = file.path(fid$sampling_input_exclusion_raster[2], "dem_cost.tif"),
+                                     snap_aoi=  file.path(fid$shape_dir_1010[2],"aoi_snapped.gpkg"),
+                                     SAGApath = sagapath,
+                                     output = file.path(fid$sampling_input_landscape[2]),
+                                     covariates = c("mrvbf", "dah", "landform"),
+                                     sieve_size = 10,
+                                     dah_threshold = 0.2,
+                                     saga_param = list(T_SLOPE = 64, TPCTL_V = 6, T_PCTL_R = 2,
+                                                    P_SLOPE = 4.0, P_PCTL = 3.0, UPDATE = 1,
+                                                    CLASSIFY = 1, MAX_RES = 100)
+                                     ){
+
+  ##### Link SAGA to R --------------------------------------------------
+  if(Sys.info()['sysname']=="Windows"){
+    saga_cmd <- paste0(SAGApath, "saga_cmd.exe")
+    fns      <- "\\" ### file name separator
+  } else {
+    saga_cmd <- "saga_cmd"
+    fns      <- "/" ### file name separator
+
+  }  ;
+  z<- system(paste(saga_cmd, "-v"), intern = TRUE)  ## prints that SAGA version number -- confirming it works.
+  z <- print(z)
+  v <- suppressWarnings(as.numeric(unlist(strsplit(z, "[[:punct:][:space:]]+")[1])))
+  v <- v[!is.na(v)][1:2]
+  v <- as.numeric(paste(v[1], v[2], sep = "."))
+
+  if (v < 7.6) {
+    warning("SAGA-GIS is less that 7.6.  Not all covariates will generate.  Upgrade your SAGA, visit https://sourceforge.net/projects/saga-gis/files/")
+  }
+
+
+  # OUTPUTS: ------------------------------------------------------------
+  ifelse(!dir.exists(file.path(output)),              #
+         dir.create(file.path(output)), print("Directory Already Exists"))        #create tmpOut
+
+  saga_tmp_files <- paste(output)
+  ifelse(!dir.exists(file.path(saga_tmp_files)),              #if tmpOut Does not Exists
+         dir.create(file.path(saga_tmp_files)), print("Directory Already Exists"))        #create tmpOut
+
+  ## Convert to Saga format for processing ---------------------------------------
+ aoi_snapped <- terra::vect(snap_aoi)
+    dtm2 = terra::rast(dtm)
+  #dtm2 = terra::crop(dtm2,aoi_snapped)
+  rtemplate = terra::rast(aoi_snapped)
+ terra::values(rtemplate) <- 0
+  #sDTM <- "dtm.sdat"
+  sDTM <- file.path(saga_tmp_files,"dtm.sdat")
+  terra::writeRaster(dtm2, sDTM, overwrite = TRUE)
+
+
+
+  ############ Covariate File Names #############################################
+  ### This is ugly! re-write
+  sDTM <- file.path(saga_tmp_files,"dtm.sdat")
+  sinksroute <- file.path(saga_tmp_files, "sinkroute.sgrd")
+  sinksfilled <- file.path(saga_tmp_files, "filled_sinks.sgrd")
+  MRVBF <- file.path(saga_tmp_files, "mrvbf.sgrd")
+  MRRTF <- file.path(saga_tmp_files, "mrrtf.sgrd")
+  dah <- file.path(saga_tmp_files, "dah.sgrd")
+
+
+  # fill sinks in DEM
+  sysCMD <- paste(saga_cmd, "ta_preprocessor 5", "-ELEV" ,
+                  sDTM,
+                  "-FILLED", sinksfilled,
+                  "-MINSLOPE ", 0.1
+  )
+  system(sysCMD)
+
+  # set covariates to include all 3 covariates if no input is given
+
+  if (is.null(covariates)) covariates <- c("mrvbf", "dah", "landform")
+ ## 1.  Landscape MRVBF
+  # http://www.saga-gis.org/saga_tool_doc/7.2.0/ta_morphometry_8.html
+
+  if (any(covariates == "mrvbf")){
+
+    # if (is.null(saga_param)){
+
+      # saga_param <- list(T_SLOPE = 64, TPCTL_V = 6, T_PCTL_R = 2,
+      #                    P_SLOPE = 4.0, P_PCTL = 3.0, UPDATE = 1,
+      #                    CLASSIFY = 1, MAX_RES = 100)
+    # }
+
+  sysCMD <- paste(saga_cmd, "ta_morphometry 8", "-DEM",
+                  sDTM,
+                  "-MRVBF", MRVBF,
+                  "-MRRTF", MRRTF,                       # Outputs
+                  "-T_SLOPE", saga_param$T_SLOPE,
+                  "-T_PCTL_V", saga_param$TPCTL_V,
+                  "-T_PCTL_R", saga_param$T_PCTL_R,    # Default Parameters
+                  "-P_SLOPE", saga_param$P_SLOPE,
+                  "-P_PCTL", saga_param$P_PCTL,
+                  "-UPDATE", saga_param$UPDATE,
+                  "-CLASSIFY", saga_param$CLASSIFY,
+                  "-MAX_RES", saga_param$MAX_RES
+  )
+  system(sysCMD)
+
+  # sieve and then threshold
+
+  mrvbf_r <- terra::rast(gsub(".sgrd", ".sdat", MRVBF)) %>%
+    terra::sieve(threshold = sieve_size, directions=8)# %>%
+
+  mrvbf_rcrop <- terra::crop(mrvbf_r, rtemplate)
+
+  terra::writeRaster(mrvbf_rcrop, file.path(saga_tmp_files, "mrvbf_LS.tif"), overwrite = TRUE)
+
+}
+  ## 2.  Landscape Diuranal Anisotropic Heating
+  # http://www.saga-gis.org/saga_tool_doc/7.2.0/ta_morphometry_12.html
+
+
+  if (any(covariates == "dah")){
+
+  sysCMD <- paste(saga_cmd, "ta_morphometry 12", "-DEM",
+                  sDTM,
+                  "-DAH", dah,    # Output
+                  "-ALPHA_MAX", 202.5   # Default Parameters
+  )
+  system(sysCMD)
+
+  # reclass and threshold dah
+
+  dah_r <- terra::rast(gsub(".sgrd", ".sdat", dah))
+
+  # filter based on the 0.3 for Date Cree
+  # - review the slope (style into three classes
+  #                     - <25% slope or 0.43 radians,
+  #                     - 45% slope or 0.43 - 0.78 radians
+  #                     - >45% slope
+  #                     - once this is stlyed then you can adjust the grouping on the DAH to match
+  #                     - Deception = -0.2 to 0.2.
+  #                     - Date Creek = -0.3 to 0.3.
+  #                     - Peter Hope = -0.2 to 0.2
+
+  m <- c( -10, (dah_threshold*-1), 1,
+          (dah_threshold*-1 ), dah_threshold, 2,
+          dah_threshold, 10,  3)
+  rclmat <- matrix(m, ncol=3, byrow =TRUE)
+
+  rc <- terra::classify(dah_r, rclmat)
+
+  rc <- rc %>%
+    terra::sieve(threshold = sieve_size, directions=8)
+
+  rc_crop <- terra::crop(rc, rtemplate)
+
+  terra::writeRaster(rc_crop, file.path(saga_tmp_files, "dah_LS.tif"), overwrite = TRUE)
+}
+
+  ## 3. Landform Class
+  if (any(covariates == "landform")){
+  land_class <- create_landform_classes(dtm2, scale = 75, sn = 3, ln = 7, n.classes = "six")
+
+  # sieve landclass
+  land_class <- land_class %>%
+    terra::sieve(threshold = sieve_size, directions=8) %>%
+    terra::subst(from = 0, to = NA)
+
+  land_class <- terra::crop(land_class, rtemplate)
+  names(land_class)<- "landclass"
+
+  terra::writeRaster(land_class, file.path(saga_tmp_files, "landform_LS.tif"), overwrite = TRUE)
+
+  # remove temp Saga files
+  # unlink(paste(output, "saga", sep = "/"), recursive = TRUE)
+  # delete the files
+  }
+  to_delete <- grep(".tif", list.files(file.path(saga_tmp_files), full.names = TRUE), value = T, invert = TRUE)
+  file.remove(to_delete)
+
+  return(TRUE)
+
+}
+```
+
+## Create Landcape variables
+```{r}
+devtools::load_all("D:\\GitHub\\PEMsamplr")
+sagapath = "C:/saga-9.0.2_x64/"
+create_samplr_covariates()
+                     
+```
+## Landscape combined view
+```{r}
+# generate landscape validation 
+
+fileoi <- c("dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif")
+outpath = file.path(fid$sampling_input_landscape[2])
+
+filesoi <- list.files(outpath, full.names = TRUE)[list.files(outpath) %in% fileoi]
+
+landscapes <- create_binned_landscape(outpath)
+
+terra::plot(landscapes)
+
+terra::writeRaster(landscapes, file.path(outpath, "landscape_variable_validation.tif"), overwrite = TRUE)
+
+
+# Check the landscape distribution by bgc
+
+becpath <-fid$shape_dir_1010[1]
+
+bec <- sf::st_read(file.path(becpath, "bec.gpkg")) %>%
+  sf::st_cast(., "MULTIPOLYGON") 
+
+routdf <- check_bgc_landscapes(bec,landscapes)
+
+ggplot2::ggplot(routdf, aes(landscape)) +
+  ggplot2::geom_histogram() +
+  ggplot2::facet_wrap(~MAP_LABEL)
+```
+
+# generate a BGC cost mask per BGC in map area
+
+```{r}
+create_bgc_mask <- function(vec_dir = file.path(fid$shape_dir_1010[2], "bec.gpkg"),
+                            #cost_masked = file.path(fid$sampling_input_landscape[2], "cost_penalty.tif"), 
+                            out_dir = fid$sampling_input_exclusion_bgc[2]) {
+
+  # exclude water:
+  #bec<- sf::st_read(file.path(vec_dir, "bec.gpkg"))
+  bec<- sf::st_read(vec_dir)
+  boi <- unique(bec$MAP_LABEL)
+  #rcost_masked = terra::rast(cost_masked)
+  
+
+  for (b in boi) {
+    # b = boi[1]
+
+    subzone <- bec %>%
+      dplyr::filter(MAP_LABEL %in% b)
+
+    subzone_buff <- sf::st_buffer(subzone, dist = -150)
+
+    # boi_mask <- terra::mask(rcost_masked, subzone_buff)
+    # names(boi_mask) = 'cost'
+    # boi_mask <- 1 + (boi_mask *0)
+    # terra::writeRaster(boi_mask, file.path(out_dir, paste0(b,"_exclude_mask.tif")), overwrite = TRUE)
+    # 
+    # mask_poly_boi <- terra::as.polygons(boi_mask, dissolve = TRUE)
+    # mask_poly_boi <- st_as_sf(mask_poly_boi)
+    st_write(subzone_buff, file.path(out_dir,paste0(b, "_exclude_poly.gpkg")), delete_dsn = TRUE, overwrite = TRUE)
+  }
+  return(TRUE)
+
+}
+```
+
+```{r}
+#exclusion_path <- fid$sampling_input_exclusion[2]
+
+create_bgc_mask()
+
+```
+
+
+##Generate AOI with binned landscape
+```{r adjusted cost layer}
+# Check costs by bgc vs binned landscape
+# landscape <- terra::rast(file.path(outpath, "landscape_variable_validation.tif"))
+# bgccost <- check_bgc_cost(bgc = bec,
+#                           binned_landscape = landscape,
+#                           cost = acost)
+# 
+# ggplot2::ggplot(bgccost, ggplot2::aes(landscape, fill = cost_code)) +
+#   ggplot2::geom_histogram(bins = 30) +
+#   ggplot2::facet_wrap(~MAP_LABEL)
+
+# generate cost penalty
+```
+
+
+```{r clhs function}
+ #devtools::install_github("kdaust/clhs") 
+ require(clhs)
+require(data.table)
+require(dplyr)
+create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
+                        n_points = 5, min_dist = 1000, num_sample = 5000000, cost = "cost"){
+  if(num_slices < 1) stop("Hold up! Must have at least one slice.")
+
+  layer_names <- names(all_cov)
+  samp_dat <- terra::spatSample(all_cov , size = num_sample, method = "regular", xy = TRUE, as.df = F) # sample raster
+  samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost), !is.na(landclass)) #%>% dplyr::mutate(across(c(-"cost", -"x", -"y"), as.factor))
+
+  coords <- samp_dat[,c("x","y")]
+  curr_dat <- samp_dat[,layer_names]
+
+  ##setup initial data
+  if(is.null(to_include)){ ##nothing to include
+    inc_idx <- NULL
+    size = n_points
+  }else{
+    inc_pts <- terra::extract(all_cov, to_include) ##test this
+    inc_pts <- inc_pts[,-(1)]
+    inc_pts <- sf::st_as_sf(inc_pts)
+    inc_idx <- 1:nrow(inc_pts)
+    size = n_points + nrow(inc_pts)
+    curr_dat <- rbind(to_include, curr_dat) ##comine with inlcuded data
+    include_coords <- st_coordinates(to_include)
+    coords <- rbind(coords, include_coords)
+  }
+
+  if(num_slices == 1){
+    message("Gen-R-ating one slice...")
+
+    for(i in 1:5){
+      templhs <- clhs(curr_dat, size = size,
+                      must.include = inc_idx,
+                      iter = 200000 ,
+                      simple = FALSE,
+                      progress = TRUE,
+                      cost = cost,
+                      use.cpp = T,
+                      latlon = coords,
+                      min.dist = min_dist)
+      if(sum(templhs$final_obj_distance) == 0) break
+    }
+
+
+  }else{
+    message("Gen-R-ating multiple slices...")
+    #inc_idx = NULL
+    for(snum in 1:num_slices){
+       #snum = 1
+      #
+      for(i in 1:5){
+        i=1
+        templhs <- clhs(curr_dat,
+                        size = snum * size,
+                        must.include = inc_idx,
+                        iter = 20000 ,
+                        simple = FALSE,
+                        progress = TRUE,
+                        cost = "cost",
+                        use.cpp = T,
+                        latlon = coords,
+                        min.dist = min_dist,
+                        use.coords = FALSE)
+        if(sum(templhs$final_obj_distance) == 0){
+          break
+        }else{
+          message("Points too close. Trying again...")
+        }
+      }
+      #print(templhs$final_obj_distance)
+      inc_idx <- templhs$index_samples
+      # print(templhs$final_obj_distance)
+      # print(inc_idx)
+    }
+  }
+  # uncomment to plot points and check distance
+  if(any(templhs$final_obj_distance != 0))
+    warning("Some points fall within minimum distance!")
+
+  out <- as.data.table(samp_dat[templhs$index_samples,])
+  out[,`:=`(slice_num = rep(num_slices:1,each = n_points),
+             point_num = rep(1:n_points, times = num_slices))]
+  out_sf <- st_as_sf(out,coords = c("x","y"),crs = 3005)
+  #dist_mat <- st_distance(out_sf,out_sf)
+  #plot(all_cov$cost)
+  #points(vect(out_sf["slice_num"]))
+  return(out_sf)
+}
+```
+# 1) generate clhs
+
+```{r}
+###############################################################
+
+#devtools::load_all("D:\\GitHub\\PEMsamplr")
+clhs_outpath <- fid$samplingplan_clhs[2]
+landscape_dir <- fid$sampling_input_landscape[2]
+
+fileoi <- c( "dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif", "cost_penalty.tif")
+
+filesoi <- list.files(landscape_dir, full.names = TRUE)[list.files(landscape_dir) %in% fileoi]
+all_cov <- terra::rast(filesoi)
+
+aoi <- sf::st_read(file.path(fid$shape_dir_1010[2],"aoi.gpkg"))
+aoi_buff <- terra::vect(aoi) %>% terra::buffer(-150)
+
+roads <- sf::st_read(file.path(fid$sampling_input_exclusion_vector[2], "road_network_cost.gpkg"))
+roads_buff <- terra::vect(roads) %>% terra::buffer(155)# road centre line + 10m for ROW + 145m for transect
+
+water <-  aoi <- sf::st_read(file.path(fid$shape_dir_1010[2],"water.gpkg"))
+water <- water %>% dplyr::filter(water$WATERBODY_TYPE == "L")
+water_buff <- terra::vect(water) %>% terra::buffer(150)
+
+# read in bec masks
+bec_dir = fid$sampling_input_exclusion_bgc[2]
+
+boi <- list.files(bec_dir, pattern = ".gpkg")
+
+
+for(b in boi) {
+#b <- boi[2]
+  boi_mask <- terra::vect(file.path(bec_dir, b)) 
+  names(boi_mask) = "mask"
+  bname <- gsub("_exclude_poly.gpkg", "", b)
+  
+  ## S4 method for signature 'SpatRaster,SpatVector'
+# mask(x, mask, inverse=FALSE, updatevalue=NA,
+# 	touches=TRUE, filename="", ...)
+  
+  sample_layers_masked <-  terra::mask(all_cov, boi_mask) 
+  sample_layers_masked <-  terra::mask(sample_layers_masked, aoi_buff) 
+  sample_layers_masked <-  terra::mask(sample_layers_masked, roads_buff, inverse = TRUE) 
+    sample_layers_masked <-  terra::mask(sample_layers_masked, water_buff, inverse = TRUE) 
+  sample_layers_masked_cost <- sample_layers_masked[[2:4]]
+  sample_layers_masked <- sample_layers_masked[[1:4]]
+   #  sample_layers_masked$landclass <- as.factor(sample_layers_masked$landclass)
+   # sample_layers_masked$dah <- as.factor(sample_layers_masked$dah)
+   #  sample_layers_masked$mrvbf <- as.factor(sample_layers_masked$mrvbf)
+  terra::writeRaster(sample_layers_masked_cost, file.path(fid$samplingplan_clhs[2], paste0(bname,"_clhs_sample_mask_cost.tif")), overwrite = TRUE)
+
+  # create 10 different sample plans
+  for(rot in 1:5){ 
+    #rot = 5
+    sample_points <- create_clhs(all_cov = sample_layers_masked, 
+                                 num_slices = 5, 
+                                 to_include = NULL, 
+                                 n_points = 5, 
+                                 min_dist = 1000,
+                                 num_sample = 5000000,
+                                 cost = "cost")
+    sample_points <- sample_points %>%  dplyr::mutate(bgc = bname)
+    sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".gpkg")),append=FALSE )
+fwrite(sample_points, file.path(clhs_outpath, paste0(bname, "_clhs_sample2_",rot,".csv")),append=FALSE )
+    
+  }
+  
+} 
+
+```
+
