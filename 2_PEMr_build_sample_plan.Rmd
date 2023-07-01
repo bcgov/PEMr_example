@@ -44,9 +44,8 @@ In the example below it is assumed that you are running the following within a n
 
 # Create or read in existing folder structure for AOI
 ```{r create project folders}
-project_name <- "WetzinkwaProcess_AOI"
+project_name <- "BaboonProcess_AOI"
 fid <- setup_folders(project_name)
-
 ```
 Create new aoi bounding box large enough to contain all access roads if the start point occurs outside the AOI
 ```{r create aoi bounding box}
@@ -142,15 +141,15 @@ mapview::mapview(start)
 #my.df <- read.table(text=" x    y
 #                     935710    1083059", header = TRUE)# Deception
 
-# my.df <- read.table(text=" x    y
-#                      972620    1068774", header = TRUE)#Baboon
-# 
-# 
-# start <- st_as_sf(my.df, coords = c("x","y"),
-#                   crs = 3005) %>%
-#   as("Spatial")
-# 
-# mapview::mapview(start)
+my.df <- read.table(text=" x    y
+                     972620    1068774", header = TRUE)#Baboon
+
+
+start <- st_as_sf(my.df, coords = c("x","y"),
+                  crs = 3005) %>%
+  as("Spatial")
+
+mapview::mapview(start)
 ```
 
 
@@ -739,6 +738,34 @@ names(acost) = "cost"
 plot(acost)
 terra::writeRaster(acost, file.path(fid$sampling_input_exclusion_raster[2], "cost_raw.tif"), overwrite = TRUE)
 ```
+
+Create a bec raster to match the template sizes 
+
+```{r create rast from vector using template}
+###create function
+library(dplyr)
+rasterize_to_template <- function(covar = "bec", field = "MAP_LABEL", template = file.path(fid$cov_dir_1020[2], paste0("5m/template.tif")) ){
+  if (class(covar)[1] == "sf") {
+    aoi <- terra::vect(aoi)
+  }
+covar_sf <- sf::st_read(file.path(fid$shape_dir_1010[2], paste0(covar, ".gpkg"))) %>%   sf::st_cast(., "MULTIPOLYGON")
+covar_code <- covar_sf %>% st_drop_geometry()  %>% dplyr::select(all_of(field)) %>%
+    unique()
+covar_code <- covar_code %>%
+    mutate(covar_unique_code = seq(1, length(covar_code[1]),1))
+covar_sf <- dplyr::left_join(covar_sf, covar_code)
+covar_vect <- terra::vect(covar_sf)
+template <- terra::rast(template)
+covar_rast <- terra::rasterize(covar_vect, template)
+return(covar_rast)
+}
+```
+
+```{r}
+bec_ras5 <- rasterize_to_template()
+#bec_ras5 <- create_bgc_template()
+terra::writeRaster(bec_ras5, file.path(fid$cov_dir_1020[2], "5m", "bec.tif"), overwrite = TRUE)
+```
 ## Adjust cost layer
 ```{r create_cost penalty fucntion}
 create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]), 
@@ -748,37 +775,24 @@ create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]),
                                                     costval = 3000,
                                                     vri_cost = 2500, 
                                                     calc_by_qq = TRUE) {
-
-.assign_highcost = function(shape, crs = 3005, costval, cost) {
-
-  hcsf <- sf::st_read(shape) %>%
-    sf::st_set_crs(crs) %>%
-    dplyr::mutate(cost = costval) %>%
-    dplyr::select(cost) %>%
-    sf::st_buffer(dist = 150) %>%
-    sf::st_cast("MULTIPOLYGON")
-
-  rhc <- terra::rasterize( hcsf, cost, field = "cost", fun = "max")
-  return(rhc)
-}
+ # calculate 65% and 70% quantiles if determining the high cost threshold
+  cost <- terra::rast(cost)
+  cost <- terra::crop(cost,snap_aoi)
+  dem <- terra::rast(dem)
+  snap_aoi <- terra::vect(snap_aoi)
   
- dem = terra::rast(dem) 
- cost = terra::rast(cost)
+  if (calc_by_qq == T){
 
-
-    if (calc_by_qq == T){
-
-    qq <- terra::global(cost, quantile, probs = c(0.65, 0.70), na.rm = T)    # calculate 65% and 70% quantiles if determining the high cost threshold
+    qq <- terra::global(cost, quantile, probs = c(0.65, 0.70), na.rm = T)
 
     vri_cost <- qq$X65.
     costval <- qq$X70.
 
   }
 
-
-  
   # 1. Assign high cost for cutblocks
   if(file.exists(file.path(vec_dir, "cutblocks.gpkg"))){
+
     rcutblock<- .assign_highcost(file.path(vec_dir, "cutblocks.gpkg"), costval = costval, cost = cost)
     hc <- terra::cover(rcutblock, cost)
   }
@@ -832,7 +846,7 @@ create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]),
   }
 
 
-  # 8. Very steep areas
+  # # 8. Very steep areas
   # slope <- terra::terrain(dem, v = "slope", neighbors = 8, unit = "degrees") # convert these radians to rise/run in next line
   # # add a threshold value here
   # # degrees (45 degrees = 100%, use around 30 degrees ~ 60% )
@@ -843,15 +857,27 @@ create_cost_penalty <- function(vec_dir = file.path(fid$shape_dir_1010[2]),
   #   rclmat <- matrix(m, ncol=3, byrow =TRUE)
   #   rc <- terra::classify(slope, rclmat)
   # 
-  #   hc_out  <- terra::cover(hc, rc)
-    aoi_snapped <- terra::vect(snap_aoi)
-    hc_out <- terra::crop(hc, aoi_snapped)
+  #   hc_out  <- terra::cover(rc, hc)
+    hc_out = hc
     names(hc_out)<- "cost"
 
     return(hc_out)
 
 }
 
+.assign_highcost = function(shape, crs = 3005, costval, cost) {
+
+  hcsf <- sf::st_read(shape) %>%
+    sf::st_set_crs(crs) %>%
+    dplyr::mutate(cost = costval) %>%
+    dplyr::select(cost) %>%
+    sf::st_buffer(dist = 150) %>%
+    sf::st_cast("MULTIPOLYGON")
+
+  rhc <- terra::rasterize( hcsf, cost, field = "cost", fun = "max")
+  rhc <- terra::crop(rhc,snap_aoi)
+  return(rhc)
+}
 ```
 Create final cost layer and trim back to snapped AOI
 ```{r}
@@ -1042,7 +1068,7 @@ create_samplr_covariates <- function(dtm = file.path(fid$sampling_input_exclusio
 
 ## Create Landcape variables
 ```{r}
-devtools::load_all("D:\\GitHub\\PEMsamplr")
+#devtools::load_all("D:\\GitHub\\PEMsamplr")
 sagapath = "C:/saga-9.0.2_x64/"
 create_samplr_covariates()
                      
@@ -1050,38 +1076,38 @@ create_samplr_covariates()
 ## Landscape combined view
 ```{r}
 # generate landscape validation 
-
-fileoi <- c("dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif")
-outpath = file.path(fid$sampling_input_landscape[2])
-
-filesoi <- list.files(outpath, full.names = TRUE)[list.files(outpath) %in% fileoi]
-
-landscapes <- create_binned_landscape(outpath)
-
-terra::plot(landscapes)
-
-terra::writeRaster(landscapes, file.path(outpath, "landscape_variable_validation.tif"), overwrite = TRUE)
-
-
-# Check the landscape distribution by bgc
-
-becpath <-fid$shape_dir_1010[1]
-
-bec <- sf::st_read(file.path(becpath, "bec.gpkg")) %>%
-  sf::st_cast(., "MULTIPOLYGON") 
-
-routdf <- check_bgc_landscapes(bec,landscapes)
-
-ggplot2::ggplot(routdf, aes(landscape)) +
-  ggplot2::geom_histogram() +
-  ggplot2::facet_wrap(~MAP_LABEL)
+# 
+# fileoi <- c("dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif")
+# outpath = file.path(fid$sampling_input_landscape[2])
+# 
+# filesoi <- list.files(outpath, full.names = TRUE)[list.files(outpath) %in% fileoi]
+# 
+# landscapes <- create_binned_landscape(outpath)
+# 
+# terra::plot(landscapes)
+# 
+# terra::writeRaster(landscapes, file.path(outpath, "landscape_variable_validation.tif"), overwrite = TRUE)
+# 
+# 
+# # Check the landscape distribution by bgc
+# 
+# becpath <-fid$shape_dir_1010[1]
+# 
+# bec <- sf::st_read(file.path(becpath, "bec.gpkg")) %>%
+#   sf::st_cast(., "MULTIPOLYGON") 
+# 
+# routdf <- check_bgc_landscapes(bec,landscapes)
+# 
+# ggplot2::ggplot(routdf, aes(landscape)) +
+#   ggplot2::geom_histogram() +
+#   ggplot2::facet_wrap(~MAP_LABEL)
 ```
 
 # generate a BGC cost mask per BGC in map area
 
 ```{r}
 create_bgc_mask <- function(vec_dir = file.path(fid$shape_dir_1010[2], "bec.gpkg"),
-                            #cost_masked = file.path(fid$sampling_input_landscape[2], "cost_penalty.tif"), 
+                            #cost_masked = file.path(fid$sampling_input_landscape[2], "cost.tif"), 
                             out_dir = fid$sampling_input_exclusion_bgc[2]) {
 
   # exclude water:
@@ -1139,20 +1165,25 @@ create_bgc_mask()
 
 ```{r clhs function}
  #devtools::install_github("kdaust/clhs") 
- require(clhs)
+require(clhs)
 require(data.table)
 require(dplyr)
-create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
-                        n_points = 5, min_dist = 1000, num_sample = 5000000, cost = "cost"){
+create_clhs <- function(all_cov, num_slices = 5, to_include = NULL, which.factor = c(2:nlyr(all_cov)),
+                        n_points = 5, min_dist = 900, num_sample = 5000000, cost = "cost"){
+
   if(num_slices < 1) stop("Hold up! Must have at least one slice.")
 
   layer_names <- names(all_cov)
-  samp_dat <- terra::spatSample(all_cov , size = num_sample, method = "regular", xy = TRUE, as.df = F) # sample raster
-  samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost), !is.na(landclass)) #%>% dplyr::mutate(across(c(-"cost", -"x", -"y"), as.factor))
+samp_dat <- terra::spatSample(all_cov , size = num_sample, method = "regular", xy = TRUE, as.df = F)
+samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost), !is.na(landclass)) #%>% dplyr::mutate(across(c(-"cost", -"x", -"y"), as.factor))
+  samp_dat <- samp_dat %>% mutate(cost = ifelse(cost == 0, NA , cost)) %>%  filter(!is.na(cost))
+
 
   coords <- samp_dat[,c("x","y")]
   curr_dat <- samp_dat[,layer_names]
-
+  for(fnum in which.factor) curr_dat[,fnum] <- as.factor(curr_dat[,fnum])
+  # curr_dat <- curr_dat[,lapply(.SD, as.factor), .SDcols = layer_names[which.factor]]
+  print(str(curr_dat))
   ##setup initial data
   if(is.null(to_include)){ ##nothing to include
     inc_idx <- NULL
@@ -1174,7 +1205,7 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
     for(i in 1:5){
       templhs <- clhs(curr_dat, size = size,
                       must.include = inc_idx,
-                      iter = 200000 ,
+                      iter = 10000 ,
                       simple = FALSE,
                       progress = TRUE,
                       cost = cost,
@@ -1187,16 +1218,15 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
 
   }else{
     message("Gen-R-ating multiple slices...")
-    #inc_idx = NULL
+    print(str(curr_dat))
     for(snum in 1:num_slices){
        #snum = 1
       #
       for(i in 1:5){
-        i=1
         templhs <- clhs(curr_dat,
                         size = snum * size,
                         must.include = inc_idx,
-                        iter = 20000 ,
+                        iter = 10000 ,
                         simple = FALSE,
                         progress = TRUE,
                         cost = "cost",
@@ -1221,7 +1251,7 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
     warning("Some points fall within minimum distance!")
 
   out <- as.data.table(samp_dat[templhs$index_samples,])
-  out[,`:=`(slice_num = rep(num_slices:1,each = n_points),
+  out[, ':='(slice_num = rep(num_slices:1,each = n_points),
              point_num = rep(1:n_points, times = num_slices))]
   out_sf <- st_as_sf(out,coords = c("x","y"),crs = 3005)
   #dist_mat <- st_distance(out_sf,out_sf)
@@ -1232,14 +1262,14 @@ create_clhs <- function(all_cov, num_slices = 5, to_include = NULL,
 ```
 # 1) generate clhs
 
-```{r}
+```{r generate clhs}
 ###############################################################
 
 #devtools::load_all("D:\\GitHub\\PEMsamplr")
 clhs_outpath <- fid$samplingplan_clhs[2]
 landscape_dir <- fid$sampling_input_landscape[2]
 
-fileoi <- c( "dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif", "cost_penalty.tif")
+fileoi <- c("cost_penalty.tif", "dah_LS.tif", "mrvbf_LS.tif", "landform_LS.tif" )
 
 filesoi <- list.files(landscape_dir, full.names = TRUE)[list.files(landscape_dir) %in% fileoi]
 all_cov <- terra::rast(filesoi)
@@ -1261,7 +1291,7 @@ boi <- list.files(bec_dir, pattern = ".gpkg")
 
 
 for(b in boi) {
-#b <- boi[2]
+#b <- boi[1]
   boi_mask <- terra::vect(file.path(bec_dir, b)) 
   names(boi_mask) = "mask"
   bname <- gsub("_exclude_poly.gpkg", "", b)
@@ -1280,24 +1310,29 @@ for(b in boi) {
    # sample_layers_masked$dah <- as.factor(sample_layers_masked$dah)
    #  sample_layers_masked$mrvbf <- as.factor(sample_layers_masked$mrvbf)
   terra::writeRaster(sample_layers_masked_cost, file.path(fid$samplingplan_clhs[2], paste0(bname,"_clhs_sample_mask_cost.tif")), overwrite = TRUE)
-
+ 
   # create 10 different sample plans
   for(rot in 1:5){ 
     #rot = 5
     sample_points <- create_clhs(all_cov = sample_layers_masked, 
                                  num_slices = 5, 
                                  to_include = NULL, 
+                                 which.factor = c(2:4),
                                  n_points = 5, 
-                                 min_dist = 1000,
-                                 num_sample = 5000000,
+                                 min_dist = 900,
+                                 num_sample = 500000,
                                  cost = "cost")
-    sample_points <- sample_points %>%  dplyr::mutate(bgc = bname)
+    sample_points <- sample_points %>%   dplyr::mutate(bgc = bname)
+    fwrite(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".csv")),overwrite = TRUE  )
     sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname,"_clhs_sample_",rot,".gpkg")),append=FALSE )
-fwrite(sample_points, file.path(clhs_outpath, paste0(bname, "_clhs_sample2_",rot,".csv")),append=FALSE )
+    #sf::st_write(sample_points, file.path(clhs_outpath, paste0(bname, "_clhs_sample_",rot,".gpkg")),append=FALSE )
+
     
   }
   
 } 
 
+plot(sample_layers_masked[[1]])
+plot(sample_points, add = T)
 ```
 
